@@ -490,7 +490,7 @@ public enum PasswordResponse: Sendable {
 
 ### 7.3 비밀번호
 - §6.1. 읽기는 후보를 차례로, 쓰기는 첫 번째 인코딩 하나.
-- CP949 비밀번호로 만든 zip 은 **Satchel · 한국어 Windows 도구와만** 호환이 보장된다. README 에 적는다.
+- `encodings` 첫 번째를 `.cp949` 로 두고 한글 비밀번호로 만든 zip 은, 비밀번호를 UTF-8 로 해석하는 도구(7-Zip · macOS 등)에서 열리지 않는다 — 기본값(UTF-8)을 쓰면 해당 없음.
 
 ---
 
@@ -655,7 +655,7 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 ## 13. 샘플 앱 (`Example/SatchelExample.swiftpm`)
 
 - Swift Playgrounds 앱 패키지 형식 — Xcode 로 폴더를 열면 iOS 앱으로 실행된다. 라이브러리는 `../..` 로컬 경로로 연결.
-- SwiftUI · **iOS 16+** — 라이브러리(iOS 15)보다 높은 이유는 `NavigationStack` · `ShareLink`(둘 다 iOS 16). 샘플은 앱에 들어가지 않아 코드를 짧게 두는 쪽을 택했다. iOS 15 로 내리려면 `NavigationView` · `UIActivityViewController` 로 바꾼다. 자세한 건 `Example/README.md`.
+- SwiftUI · **iOS 16+** — 라이브러리(iOS 15)보다 높은 이유는 `NavigationStack` · `ShareLink`(둘 다 iOS 16). 샘플은 앱에 들어가지 않아 코드를 짧게 두는 쪽을 택했다. iOS 15 로 내리려면 `NavigationView` · `UIActivityViewController` 로 바꾼다. 자세한 건 `Example/README.md`(영문) · `Example/README.ko.md`(한국어).
 - 서명 팀은 비워 두었다 — 실기기 실행 시 각자 고른다. Xcode 가 `Package.swift` 에 `teamIdentifier` 를 써 넣으므로 커밋하지 않는다.
 - **열기**: 파일 선택 → 항목 목록(암호화 여부 · 방식 · Zip64 · 크기 표시).
 - **해제**: `PasswordProvider` 를 구현한 `@MainActor` 객체가 `SecureField` 알림창을 띄운다. 틀리면 "다시 입력"(시도 횟수 표시), 건너뛰기 · 취소 버튼. 진행률 막대 + 취소.
@@ -688,3 +688,4 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 | 2026-09-29 | 코드 리뷰(5개 차원, 24건) 반영 — Zip64 locator 오버플로(P1), 경로 트리, 원자적 파일 교체 · 파일↔폴더 충돌 거부, 쓰기 경로 등록소 경유, `storesCRC(for:)`, 스킴 제자리 교체, 빈 비밀번호 = 틀림, `allowedEncryption` 기본 nil, `ExtractLimits.inMemory`, 8 KiB 해제 입력, 압축률 미리 판정, `O_NOFOLLOW` 원본 읽기, group/other 쓰기 제거, slice-by-8 CRC, 파생 키 지우기 |
 | 2026-09-29 | 최소 지원 버전 iOS 13 / macOS 10.15 → **iOS 15 / macOS 12** (쓰는 앱의 상향 계획에 맞춤) |
 | 2026-09-29 | **ZipCrypto 제거**(읽기·쓰기, 태그 전) — 깨진 암호 · 자체 구현 암호라 쓰는 앱의 수출 규정 판단을 흐림 · 쓰는 곳 없음. 목록에는 `zipcrypto` 로 보이고 해제는 `unsupported`. 원칙 6(암호 알고리즘 직접 구현 금지) 추가 |
+| 2026-09-29 | README 영문화 — `README.md`·`Example/README.md` 를 영문(기본)으로, 한국어는 `README.ko.md`·`Example/README.ko.md` |

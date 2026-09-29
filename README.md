@@ -1,34 +1,36 @@
 # Satchel
 
-순수 Swift zip 라이브러리 — **압축 · 해제 · 암호화(WinZip AES) · Zip64 · CP949**.
-외부 의존성 없이 `Foundation` · `Compression` · `CommonCrypto` · `Security` 만 씁니다.
+**English** · [한국어](README.ko.md)
 
-- 외부에서 받은 zip 을 **안전하게** 풉니다 — 경로 탈출 · 심볼릭 링크 · 압축 폭탄 · 무결성 위반 차단, **전부 되거나 아무것도 남지 않는** 해제
-- WinZip AES 128/192/256 (생성 기본값 AES-256 · AE-2) — 암호화는 전부 OS 의 `CommonCrypto` 로 한다
-- 비밀번호 제공자 — 항목별 비밀번호 · 재시도 · 건너뛰기 · 취소, UTF-8 / CP949 / CP437 · NFC / NFD 후보 자동 시도
-- Zip64 읽기 · 쓰기 (4 GiB 초과 항목, 65,535개 초과 항목)
-- 한국어 파일 이름 — CP949 읽기 · 쓰기, 유니코드 경로 extra field(0x7075), NFC 정규화
-- 압축 방식 · 암호화 방식을 공개 프로토콜로 확장
-- 진행률(`Progress`) · 취소 · 메모리 입출력
+A pure Swift zip library — **compress · extract · encryption (WinZip AES) · Zip64 · CP949**.
+No external dependencies: only `Foundation` · `Compression` · `CommonCrypto` · `Security`.
 
-설계 문서: [docs/DESIGN.md](docs/DESIGN.md)
+- Extracts untrusted zips **safely** — blocks path traversal, symbolic links, zip bombs and integrity violations; extraction is **all-or-nothing**
+- WinZip AES 128/192/256 (AES-256 · AE-2 by default when creating) — all cryptography goes through the OS `CommonCrypto`
+- Password provider — per-entry passwords, retry, skip, cancel; tries UTF-8 / CP949 / CP437 and NFC / NFD candidates automatically
+- Zip64 read and write (entries over 4 GiB, more than 65,535 entries)
+- Korean filenames — CP949 read and write, Unicode Path extra field (0x7075), NFC normalization
+- Pluggable compression and encryption through public protocols
+- Progress (`Progress`) · cancellation · in-memory I/O
 
-## 요구 사항
+Design document (Korean): [docs/DESIGN.md](docs/DESIGN.md)
+
+## Requirements
 
 - iOS 15+ / macOS 12+
 - Swift 6 (Xcode 16+)
 
-## 설치
+## Installation
 
 ```swift
 .package(url: "https://github.com/eren0315/Satchel.git", exact: "0.1.0")
 ```
 
-`1.0.0` 전까지는 마이너 버전에서 API 가 바뀔 수 있어 `exact:` 고정을 권합니다.
+Until `1.0.0`, the API may change between minor versions, so pinning with `exact:` is recommended.
 
-## 사용법
+## Usage
 
-### 만들기
+### Create
 
 ```swift
 import Satchel
@@ -37,27 +39,27 @@ try Zip.create(at: archiveURL, from: [folderURL, fileURL])
 
 var options = WriteOptions()
 options.encryption = .aes(.bits256)
-options.password = Password("비밀번호")
+options.password = Password("secret")
 try Zip.create(at: archiveURL, from: [folderURL], options: options)
 ```
 
-### 풀기
+### Extract
 
 ```swift
 try Zip.extract(archiveURL, to: destinationURL)
 
 var options = ExtractOptions()
-options.password = Password("비밀번호")
+options.password = Password("secret")
 try Zip.extract(archiveURL, to: destinationURL, options: options)
 ```
 
-실패하면 `destinationURL` 은 호출 전 상태 그대로이고, 임시 파일도 남지 않습니다.
+If extraction fails, `destinationURL` is left exactly as it was before the call, and no temporary files remain.
 
-### 비밀번호를 물어 가며 풀기
+### Extract while asking for passwords
 
 ```swift
 let provider = ClosurePasswordProvider { request in
-    // request.entry.path · request.attempt · request.reason(.required / .wrongPassword)
+    // request.entry.path · request.attempt · request.reason (.required / .wrongPassword)
     guard let typed = await askUser(for: request) else { return .cancel }
     return .password(Password(typed))
 }
@@ -65,24 +67,24 @@ let result = try await Zip.extract(archiveURL, to: destinationURL, passwordProvi
 print(result.extracted.count, result.skipped.count)
 ```
 
-한 번 맞은 비밀번호는 다음 항목에서 먼저 시도하므로, 비밀번호 하나로 잠긴 zip 은 한 번만 묻습니다.
+A password that worked once is tried first for the following entries, so a zip locked with a single password asks only once.
 
-### 항목 단위
+### Per-entry access
 
 ```swift
 let reader = try ArchiveReader(url: archiveURL)
 for entry in reader.entries {
     print(entry.path, entry.uncompressedSize, entry.encryption as Any)
 }
-let data = try reader.data(for: reader.entries[0], password: Password("비밀번호"))
-let check = try reader.verify(Password("비밀번호"), for: reader.entries[0])   // .likelyCorrect / .wrong
+let data = try reader.data(for: reader.entries[0], password: Password("secret"))
+let check = try reader.verify(Password("secret"), for: reader.entries[0])   // .likelyCorrect / .wrong
 
-let writer = ArchiveWriter()                        // 메모리
+let writer = ArchiveWriter()                        // in memory
 try writer.add(Data("hello".utf8), as: "hello.txt")
 let zipData = try writer.finishData()
 ```
 
-### 확장
+### Extending
 
 ```swift
 struct MyCodec: CompressionCodec { /* methodID · makeCompressor · makeDecompressor */ }
@@ -92,28 +94,26 @@ var read = ReadOptions()
 read.registry = ZipRegistry.standard.registering(MyCodec()).registering(MyScheme())
 ```
 
-## 보안 메모
+## Security notes
 
-- **ZipCrypto(전통 zip 암호)는 지원하지 않습니다.** 알려진 공격으로 비밀번호 없이 풀리는 깨진 암호이고, 라이브러리가 직접 구현한 암호화가 되어 앱의 수출 규정(암호화) 판단을 흐립니다. ZipCrypto 로 잠긴 zip 은 `ZipError.unsupported` 로 이유를 알려 줍니다. 꼭 필요하면 `EncryptionScheme` 으로 구현해 등록할 수 있습니다.
-- Satchel 의 암호화는 AES · PBKDF2 · HMAC-SHA1 모두 OS 의 `CommonCrypto` 를 호출합니다(자체 구현 암호 알고리즘 없음). 앱의 수출 규정 판단은 App Store Connect 질문지와 담당자 몫입니다.
-- 해제 기본 상한: 총 8 GiB(메모리로 푸는 `data(for:)` 는 512 MiB), 항목별 압축 비율 1,000:1, 항목 100,000개, 경로 깊이 256 (`ExtractLimits` · `ReadOptions` 로 조절).
-- 외부 zip 의 권한은 rwx 만 복원하고 group/other 쓰기와 setuid 류는 지웁니다. 대상 폴더 안의 기존 심볼릭 링크를 거쳐 쓰지 않습니다.
-- `Password` 는 `description` · `dump()` 에 내용을 드러내지 않습니다. Swift `String` 원본은 지울 수 없으니 민감하면 `Password(bytes:)` 를 쓰세요.
-- CP949 비밀번호로 만든 zip 은 Satchel · 한국어 Windows 도구와만 호환이 보장됩니다.
+- **ZipCrypto (traditional zip encryption) is not supported.** ZipCrypto-locked zips fail with `ZipError.unsupported`.
+- Default extraction limits: 8 GiB in total (512 MiB for in-memory `data(for:)`), a 1,000:1 compression ratio per entry, 100,000 entries, and a path depth of 256 (adjust with `ExtractLimits` · `ReadOptions`).
+- Permissions from an untrusted zip are restored as rwx bits only; group/other write bits and setuid-style bits are removed. Extraction never writes through a symbolic link that already exists in the destination.
+- `Password` never reveals its contents through `description` or `dump()`. A Swift `String` cannot be wiped from memory, so use `Password(bytes:)` when that matters.
 
-## 샘플 앱
+## Sample app
 
-`Example/SatchelExample.swiftpm` 을 Xcode 로 열면 iOS 앱으로 실행됩니다 — zip 열기(항목 목록 · 비밀번호 입력 창 · 진행률 · 취소)와 만들기(압축 · 암호화 · 이름 인코딩 · Zip64).
-샘플만 **iOS 16+** 입니다(`NavigationStack` · `ShareLink`). 실행 방법 · 테스트용 zip · 버전 이유는 [Example/README.md](Example/README.md).
+Open `Example/SatchelExample.swiftpm` in Xcode to run it as an iOS app — open a zip (entry list · password prompt · progress · cancel) and create one (compression · encryption · filename encoding · Zip64).
+Only the sample requires **iOS 16+** (`NavigationStack` · `ShareLink`). See [Example/README.md](Example/README.md) for how to run it, test zips, and why it targets iOS 16.
 
-## 테스트
+## Tests
 
 ```bash
 swift test
 ```
 
-픽스처는 macOS 기본 도구(`bsdtar` · `zip` · `unzip` · `ditto`)와 `python3` 로 테스트 중에 만듭니다. AES 는 libarchive(`bsdtar`)와 교차 검증합니다. 4 GiB 초과 테스트는 `SATCHEL_LARGE_TESTS=1 swift test -c release`.
+Fixtures are generated during the tests with built-in macOS tools (`bsdtar` · `zip` · `unzip` · `ditto`) and `python3`. AES is cross-checked against libarchive (`bsdtar`). Run the over-4-GiB test with `SATCHEL_LARGE_TESTS=1 swift test -c release`.
 
-## 라이선스
+## License
 
-[0BSD](LICENSE) — 조건 없이 사용 · 수정 · 배포할 수 있습니다. 저작권 표시도 필요 없습니다.
+[0BSD](LICENSE) — use, modify and distribute without any conditions. No attribution required.
