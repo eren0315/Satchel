@@ -4,7 +4,7 @@
 > 압축 · 해제 · 암호화(WinZip AES / ZipCrypto) · Zip64 · 한국어 인코딩(CP949)을 지원하고, 압축 방식과 암호화 방식을 **공개 프로토콜로 끼워 넣을 수 있다.**
 > 외부 의존성 없음 — `Foundation` · `Compression` · `CommonCrypto` · `Security` 만 쓴다.
 
-- 상태: **설계 (0.x)** — 이 문서가 설계의 단일 기준이다. 바뀌면 이 문서를 고치고 맨 아래 변경 이력에 남긴다.
+- 상태: **0.1.0 구현 완료 (태그 전)** — 이 문서가 설계의 단일 기준이다. 바뀌면 이 문서를 고치고 맨 아래 변경 이력에 남긴다.
 - 버전: **0.1.0 부터 시작**. `1.0.0` 전까지는 마이너 버전(0.x → 0.y)에서 공개 API 가 바뀔 수 있다(SemVer 0.x 규칙). 쓰는 쪽은 `exact:` 로 고정하길 권한다.
 
 ---
@@ -62,16 +62,15 @@ Satchel/
 │   ├── Text/                     // 파일 이름·비밀번호 인코딩 (UTF-8 · CP949 · CP437) · NFC 정규화
 │   ├── Safety/                   // 항목 경로 검증 · 상한 검사
 │   ├── Storage/                  // 파일 · 메모리 저장소, 64 KiB 버퍼
+│   ├── Engine/                   // 해제 세션(사전 점검 · 임시 폴더 · 원자적 이동) · 진행률/취소
 │   └── Checksum/                 // CRC32
-├── Tests/SatchelTests/
-│   └── Fixtures/                 // 합성 zip 만. 실제 서비스 파일은 넣지 않는다
-├── Scripts/make-fixtures.sh      // 픽스처 재생성 (zip · ditto · python3 · 7zz · iconv)
-└── Example/                      // 샘플 앱 (SwiftUI)
+├── Tests/SatchelTests/           // 픽스처는 테스트 중에 시스템 도구로 만든다 (§12) — 바이너리를 커밋하지 않는다
+└── Example/SatchelExample.swiftpm // 샘플 앱 (SwiftUI, Xcode 로 연다)
 ```
 
 - **iOS 13 / macOS 10.15**: 연결할 앱의 최소 지원 버전보다 높으면 연결이 안 된다. macOS 는 `swift test` 를 시뮬레이터 없이 돌리기 위해 넣는다. async API 는 Swift Concurrency back-deploy 로 iOS 13 에서 동작한다.
 - **Swift 6 언어 모드**: 엄격한 동시성 검사로 스레드 안전을 컴파일러가 보장하게 한다. 쓰는 쪽은 Xcode 16 이상이어야 한다.
-- **의존성 0개** (테스트 포함). 교차 검증은 macOS 기본 `unzip` 과, 설치돼 있으면 `7zz` 로 한다 (§12).
+- **의존성 0개** (테스트 포함). 교차 검증은 macOS 기본 도구(`bsdtar`(libarchive) · `zip`/`unzip` · `ditto`)와 `python3`, 설치돼 있으면 `7zz` 로 한다 (§12).
 - **공개 타입 이름을 모듈 이름 `Satchel` 과 같게 두지 않는다** — `Satchel.X` 로 한정할 때 모듈과 타입이 충돌한다.
 
 ---
@@ -81,7 +80,7 @@ Satchel/
 ```
 ┌ 공개 API ───────────────────────────────────────────────────────────┐
 │  Zip (간편 함수)      ArchiveReader            ArchiveWriter          │
-│  Password · PasswordProvider · CreateOptions · ExtractOptions · Entry │
+│  Password · PasswordProvider · WriteOptions · ExtractOptions · Entry  │
 └──────────────────────────────┬──────────────────────────────────────┘
 ┌ 항목 파이프라인 ───────────────┴──────────────────────────────────────┐
 │  읽기: 저장소 → [복호화 + 무결성] → [해제 + CRC + 크기 상한] → 출력    │
@@ -113,16 +112,18 @@ public enum Zip {
     /// items(파일·폴더)를 묶어 zip 을 만든다. 폴더는 하위 전체, 항목 이름은 각 item 의 부모 기준 상대 경로.
     @discardableResult
     public static func create(at archiveURL: URL, from items: [URL],
-                              options: CreateOptions = .init()) throws -> CreateResult
+                              options: WriteOptions = .init()) throws -> CreateResult
 
     /// 고정 비밀번호(또는 없음)로 전부 푼다.
     @discardableResult
     public static func extract(_ archiveURL: URL, to destinationURL: URL,
+                               readOptions: ReadOptions = .init(),
                                options: ExtractOptions = .init()) throws -> ExtractResult
 
     /// 비밀번호 제공자에게 항목마다 물어 가며 푼다. Task 취소를 따른다.
     @discardableResult
     public static func extract(_ archiveURL: URL, to destinationURL: URL,
+                               readOptions: ReadOptions = .init(),
                                options: ExtractOptions = .init(),
                                passwordProvider: any PasswordProvider) async throws -> ExtractResult
 }
@@ -139,9 +140,13 @@ public final class ArchiveReader: Sendable {
     public var entries: [Entry] { get }                   // 목차 기준. 열 때 한 번 읽는다
     public var comment: String? { get }
 
-    public func extract(_ entry: Entry, to url: URL, password: Password? = nil) throws
-    public func data(for entry: Entry, password: Password? = nil) throws -> Data
-    public func verify(_ password: Password, for entry: Entry) throws -> PasswordCheck
+    public func extract(_ entry: Entry, to url: URL, password: Password? = nil, limits: ExtractLimits = .default,
+                        allowedEncryption: Set<EncryptionIdentifier>? = nil) throws
+    public func data(for entry: Entry, password: Password? = nil, limits: ExtractLimits = .inMemory,
+                     allowedEncryption: Set<EncryptionIdentifier>? = nil) throws -> Data
+    public func verify(_ password: Password, for entry: Entry, thorough: Bool = false,
+                       limits: ExtractLimits = .default) throws -> PasswordCheck
+    // 항목 단위 API 도 전체 해제와 같은 구조 · 지원 · 상한 점검을 거친다 (겹침 · 이름 불일치 · 비율).
     public func extractAll(to url: URL, options: ExtractOptions) throws -> ExtractResult
     public func extractAll(to url: URL, options: ExtractOptions,
                            passwordProvider: any PasswordProvider) async throws -> ExtractResult
@@ -154,11 +159,12 @@ public final class ArchiveWriter {
 
     public func addFile(at url: URL, as path: String? = nil, options: EntryOptions? = nil) throws
     public func addDirectory(at url: URL, as path: String? = nil, options: EntryOptions? = nil) throws  // 하위 전체
-    public func add(_ data: Data, as path: String, modificationDate: Date = .now, options: EntryOptions? = nil) throws
-    public func addEmptyDirectory(as path: String) throws
+    public func add(_ data: Data, as path: String, modificationDate: Date = Date(), options: EntryOptions? = nil) throws
+    public func addEmptyDirectory(as path: String, modificationDate: Date = Date()) throws
 
-    public func finish() throws              // 파일·사용자 저장소
-    public func finishData() throws -> Data  // 메모리
+    @discardableResult
+    public func finish() throws -> CreateResult   // 파일·사용자 저장소
+    public func finishData() throws -> Data       // 메모리
 }
 ```
 
@@ -168,7 +174,13 @@ public final class ArchiveWriter {
 ### 4.3 옵션
 
 ```swift
-public struct CreateOptions: Sendable {               // = WriteOptions + 폴더 순회 옵션
+public struct ReadOptions: Sendable {                 // zip 을 열 때
+    public var filenameEncoding: FilenameEncoding = .automatic
+    public var maxEntryCount: Int = 100_000           // 열 때 바로 검사
+    public var registry: ZipRegistry = .standard
+}
+
+public struct WriteOptions: Sendable {                // ArchiveWriter · Zip.create
     public var compression: CompressionMethod = .deflate
     public var encryption: EncryptionMethod = .none
     public var password: Password? = nil              // encryption != .none 이면 필수
@@ -181,49 +193,41 @@ public struct CreateOptions: Sendable {               // = WriteOptions + 폴더
     public var progress: Progress? = nil
 }
 
-public struct EntryOptions: Sendable {                // 항목 단위 덮어쓰기 (nil 인 값은 CreateOptions 를 따른다)
+public struct EntryOptions: Sendable {                // 항목 단위 덮어쓰기 (nil 인 값은 WriteOptions 를 따른다)
     public var compression: CompressionMethod?
     public var encryption: EncryptionMethod?
     public var password: Password?
 }
 
 public struct ExtractOptions: Sendable {
-    public var password: Password? = nil              // 동기 API 용
-    public var overwrite: Bool = false
-    public var filenameEncoding: FilenameEncoding = .automatic
-    public var allowedEncryption: Set<EncryptionIdentifier> = [.winZipAES, .zipCrypto]
+    public var password: Password? = nil              // 동기 API 용 · async 에서는 제공자보다 먼저 시도
+    public var overwrite: Bool = false                // 폴더는 합치고, 같은 경로 파일은 false: destinationExists / true: 교체
+    public var allowedEncryption: Set<EncryptionIdentifier>? = nil   // nil = 등록소에 등록된 전부
     public var limits: ExtractLimits = .default
     public var restoresModificationDate: Bool = true
-    public var restoresPermissions: Bool = true       // 실행 비트 등. setuid/setgid/sticky 는 항상 제거
-    public var registry: ZipRegistry = .standard
+    public var restoresPermissions: Bool = true       // rwx 만. setuid/setgid/sticky 는 항상 제거
     public var progress: Progress? = nil
 }
 
 public struct ExtractLimits: Sendable {
-    public var maxEntryCount: Int = 100_000
     public var maxTotalUncompressedSize: UInt64 = 8 << 30   // 8 GiB
-    public var maxCompressionRatio: UInt64 = 1_000          // 항목별 해제/압축 비율 상한
-    public static let `default` = ExtractLimits()
-    public static let unlimited: ExtractLimits              // 쓰는 쪽이 책임질 때만
+    public var maxCompressionRatio: UInt64 = 1_000          // 항목별 해제/압축 비율 상한 (DEFLATE 최대치 ≈ 1032)
+    public static let `default`: ExtractLimits
+    public static let inMemory: ExtractLimits               // data(for:) 기본값 — 항목 하나 512 MiB
+    public static let unlimited: ExtractLimits              // 입력을 신뢰할 수 있을 때만
 }
 
-public enum CompressionMethod: Sendable, Hashable {
-    case store, deflate
-    case custom(methodID: UInt16)                     // 등록소에서 코덱을 찾는다
-}
-
+public enum CompressionMethod: Sendable, Hashable { case store, deflate, custom(methodID: UInt16) }
 public enum EncryptionMethod: Sendable, Hashable {
     case none
     case aes(AESStrength = .bits256)
     case legacyZipCrypto                              // ⚠️ 약한 암호. 기본 도구 호환이 꼭 필요할 때만
     case custom(EncryptionIdentifier)
 }
-public enum AESStrength: Sendable { case bits128, bits192, bits256 }
-
+public enum AESStrength: Sendable, CaseIterable { case bits128, bits192, bits256 }
 public enum Zip64Mode: Sendable { case automatic, always, never }
-
 public enum FilenameEncoding: Sendable, Hashable {
-    case automatic                                    // 읽기 전용: §7.1 순서로 판정
+    case automatic                                    // 읽기: §7.1 순서로 판정 / 쓰기: utf8 과 같다
     case utf8, cp949, cp437
     case custom(String.Encoding)
 }
@@ -322,6 +326,10 @@ public protocol EncryptionScheme: Sendable {
     // ── 읽기 ──
     /// 이 항목이 이 스킴으로 암호화됐는지 헤더(플래그 · 압축 방식 ID · extra field)로 판정
     func matches(_ header: EntryHeader) -> Bool
+    /// 실제 압축 방식 번호 (AES 는 extra field 안에 있다). 기본 구현 = 헤더 값
+    func actualCompressionMethodID(for header: EntryHeader) -> UInt16
+    /// 헤더의 CRC 필드가 의미 있는 값인가 (AE-2 → false). `Entry.crc32` 가 nil 이 되는 근거. 기본 구현 = true
+    func storesCRC(for header: EntryHeader) -> Bool
     /// 데이터 맨 앞에서 읽어야 할 바이트 수 (AES: salt + 확인값, ZipCrypto: 12)
     func prefixLength(for header: EntryHeader) -> Int
     /// 맨 뒤 바이트 수 (AES: 인증 코드 10, ZipCrypto: 0)
@@ -345,6 +353,8 @@ public protocol EntryDecryptor: ByteTransform {
     func verify(trailer: [UInt8]) throws
     /// true 면 스킴이 무결성을 보장하므로 CRC 가 0 이어도 된다 (AE-2)
     var providesIntegrity: Bool { get }
+    /// true 면 무결성 실패를 "비밀번호 틀림"으로 본다 (ZipCrypto). 기본 구현 = false
+    var integrityFailureIndicatesWrongPassword: Bool { get }
 }
 
 public protocol EntryEncryptor: ByteTransform {
@@ -365,18 +375,21 @@ public struct EncryptionContext: Sendable {
 
 ```swift
 public protocol ArchiveReadable: Sendable {
-    var size: UInt64 { get throws }
-    func read(at offset: UInt64, count: Int) throws -> [UInt8]   // 여러 스레드에서 동시에 불려도 안전해야 한다
+    func size() throws -> UInt64
+    func read(at offset: UInt64, count: Int) throws -> [UInt8]   // 여러 스레드에서 동시에 불려도 안전해야 한다. 덜 돌려주면 끝
 }
 
 public protocol ArchiveWritable: AnyObject {
     var position: UInt64 { get }
     func write(_ bytes: [UInt8]) throws
     func write(_ bytes: [UInt8], at offset: UInt64) throws        // 헤더 보정용 (되돌아가 덮어쓰기)
+    func truncate(to offset: UInt64) throws                       // 저장 방식으로 다시 쓰기 · 실패한 항목 되돌리기
     func commit() throws                                          // 성공 확정 (파일: 임시 → 최종 이동)
     func discard()                                                // 실패 시 정리
 }
 ```
+
+- 내장 구현(공개): `FileReadStorage`(`pread`) · `MemoryReadStorage` · `FileWriteStorage`(임시 파일 → `renamex_np(RENAME_EXCL)`) · `MemoryWriteStorage`.
 
 ### 5.5 등록소
 
@@ -390,7 +403,9 @@ public struct ZipRegistry: Sendable {
 ```
 
 - 등록소는 **값 타입**이다. 전역 상태를 바꾸지 않고 옵션으로 넘긴다 — 한 앱 안에서 서로 다른 설정이 섞여도 안전하다.
-- 암호화 판정은 등록된 스킴을 순서대로 `matches` 에 물어 **첫 번째로 맞는 것**을 쓴다. 아무것도 안 맞는데 플래그 bit 0 이 켜져 있으면 `unsupported`.
+- 암호화 판정은 스킴을 순서대로 `matches` 에 물어 **첫 번째로 맞는 것**을 쓴다. `registering(_:)` 은 **새 identifier 를 맨 앞에** 넣고, **같은 identifier 는 그 자리에서** 교체한다 — ZipCrypto 처럼 넓게 맞는 내장 스킴은 뒤에 남아 사용자 스킴을 가리지 않는다(내장 스킴을 교체해도 순서 유지).
+- **쓰기도 등록소를 거친다** — `.aes` · `.legacyZipCrypto` 도 등록소에서 identifier 로 찾는다. 등록소에서 뺀 방식은 쓸 수 없고, 교체한 구현이 쓰인다(내장 AES 만 호출마다 강도를 받는다). 저장 방식 대체도 등록소의 저장 코덱을 쓴다. 아무것도 안 맞는데 플래그 bit 0 이 켜져 있으면 `unsupported`.
+- 내장 코덱·스킴도 공개 타입이다: `StoreCodec` · `DeflateCodec` · `WinZipAESScheme(strength:)` · `ZipCryptoScheme`.
 
 ---
 
@@ -410,8 +425,8 @@ public struct Password: Sendable, CustomStringConvertible {
 public enum PasswordEncoding: Sendable { case utf8, cp949, cp437, custom(String.Encoding) }
 ```
 
-- **해제**: 후보 바이트열을 만든 뒤 같은 것은 합친다(ASCII 비밀번호는 셋이 모두 같다). 표현할 수 없는 인코딩(예: 한글 → CP437)은 건너뛴다.
-- **생성**: `encodings` 의 **첫 번째**만 쓴다. AES 의 기본은 UTF-8.
+- **해제**: 인코딩마다 **NFC · NFD 두 형태**로 후보 바이트열을 만든 뒤 같은 것은 합친다(ASCII 비밀번호는 모두 같다). 표현할 수 없는 인코딩(예: 한글 → CP437)은 건너뛴다. NFD 후보가 있는 이유: macOS `Process` 등은 인수를 NFD 로 넘겨, 다른 도구가 NFD 바이트로 암호화했을 수 있다(테스트로 확인).
+- **생성**: `encodings` 의 **첫 번째**로, **NFC** 형태를 쓴다. AES 의 기본은 UTF-8.
 - 메모리: 내부 저장소를 참조 타입 하나로 두고, 해제될 때 0 으로 덮는다(최선의 노력 — Swift `String` 원본은 지울 수 없으므로 민감하면 `bytes:` 를 쓴다).
 
 ### 6.2 비밀번호 제공자
@@ -427,6 +442,7 @@ public struct PasswordRequest: Sendable {
     public let reason: Reason                         // .required(처음) / .wrongPassword(직전 것이 틀림)
 }
 
+/// 클로저로 만드는 제공자: ClosurePasswordProvider { request in ... }
 public enum PasswordResponse: Sendable {
     case password(Password)
     case passwords([Password])                        // 여러 개를 차례로 시도
@@ -452,8 +468,8 @@ public enum PasswordResponse: Sendable {
 
 ### 6.4 `verify(_:for:)`
 - 풀지 않고 비밀번호가 맞는지만 본다.
-- `PasswordCheck`: `.correct`(무결성까지 확인) / `.likelyCorrect`(빠른 확인만 통과 — 기본) / `.wrong`.
-- `thorough: true` 를 주면 항목 전체를 복호화해 무결성까지 검증한다(비용 = 해제와 같음, 쓰기 없음).
+- `PasswordCheck`: `.correct`(무결성까지 확인) / `.likelyCorrect`(빠른 확인만 통과 — 기본) / `.wrong`. 암호화되지 않은 항목은 `.correct`.
+- `thorough: true` 를 주면 항목 전체를 복호화해 무결성까지 검증한다(비용 = 해제와 같음, 쓰기 없음). AES 는 확인값 통과 후 HMAC 이 틀리면 `corrupted` 를 던진다.
 
 ---
 
@@ -493,18 +509,23 @@ public enum PasswordResponse: Sendable {
 | 구성 요소 `.` · 연속 `/` | 제거해서 정규화 |
 | 최종 경로가 해제 폴더 안인지 | `standardizedFileURL` 로 다시 확인 (위 규칙의 안전망) |
 | 중복 이름 — **NFC 정규화 + 대소문자 무시** 비교 | `unsafeEntryPath` (macOS 기본 볼륨은 대소문자·정규화를 구분하지 않아 덮어쓰기가 된다) |
-| 파일 `a` 와 폴더 `a/` 가 함께 있음 | `unsafeEntryPath` |
+| 구성 요소 256개 초과 · 4,096 바이트 초과 | `unsafeEntryPath` (`path too deep` / `path too long`) |
+| 파일 `a` 와 폴더 `a/`(또는 `a/b`) 가 함께 있음 | `unsafeEntryPath` |
+
+중복 · 파일/폴더 충돌은 **경로 트리**(구성 요소 단위, `PathTree`)로 판정한다 — 비용이 경로 길이에 비례한다. 상위 경로 문자열을 전부 만들어 집합에 넣으면 깊은 경로 하나로 깊이의 제곱만큼 메모리를 쓴다(리뷰에서 발견).
 | 심볼릭 링크 (Unix 모드 `S_IFLNK`) | `unsafeEntryPath` |
 | 로컬 헤더 이름 ≠ 목차 이름 | `corrupted` (도구마다 다르게 풀리는 zip 을 막는다) |
 
 ### 8.2 크기 폭탄
 - 사전 점검: 항목 수 ≤ `maxEntryCount`, 선언 해제 크기 합 ≤ `maxTotalUncompressedSize`, 항목별 `해제 / 압축` ≤ `maxCompressionRatio` (압축 크기 0 인 빈 파일은 제외).
-- 해제 중: **실제로 나온 바이트가 선언 크기를 넘는 순간 중단** → `corrupted`. 선언 크기를 속인 zip 을 막는다.
+- 해제 중: **실제로 나온 바이트가 선언 크기를 넘는 순간 중단** → `corrupted`. 선언 크기를 속인 zip 을 막는다. 해제기에는 **8 KiB 씩** 넣는다 — 검사 전에 조각 하나가 부풀 수 있는 양(DEFLATE 최대 ≈ 1032배)을 약 8 MiB 로 묶는다.
+- 메모리로 푸는 `data(for:)` 는 기본 상한이 `ExtractLimits.inMemory`(512 MiB)다.
 - 겹치는 항목(두 목차 항목이 같은 데이터 영역을 가리킴 — "겹침 폭탄") → 데이터 영역 범위가 서로 겹치면 `corrupted`.
 
 ### 8.3 권한
-- 복원하는 건 `rwx` 비트뿐. **setuid · setgid · sticky 는 항상 제거**한다.
-- 해제한 폴더에는 최소 `u+rwx` 를 보장한다 (안에 쓸 수 있어야 한다).
+- 복원하는 건 `rwx` 비트뿐이고 **group/other 쓰기는 제거**한다(`& 0o755` — 외부 zip 이 world-writable 을 강요하지 못하게). **setuid · setgid · sticky 는 항상 제거**한다.
+- 소유자 접근은 보장한다 — 폴더 최소 `u+rwx`, 파일 최소 `u+rw`.
+- 해제 파일은 `O_NOFOLLOW` 로 연다. 대상 폴더 안에 **이미 있는 심볼릭 링크**를 거쳐 들어가려는 항목은 `unsafeEntryPath` (링크를 따라 밖에 쓰는 것 방지).
 
 ---
 
@@ -515,10 +536,10 @@ public enum PasswordResponse: Sendable {
 3. 항목마다 임시 폴더에 풀고 **CRC · HMAC 을 검증한 뒤** 다음 항목으로 간다.
 4. 전부 성공하면:
    - `destinationURL` 이 없으면 → 임시 폴더를 **통째로 이름 변경** (원자적)
-   - 있으면 → 최상위 항목을 옮긴다. `overwrite == false` 에 같은 이름이 있으면 **옮기기 전에** 전부 검사해 `destinationExists`
+   - 있으면 → **옮기기 전에** 전부 검사한다: 대상 안의 기존 심볼릭 링크 → `unsafeEntryPath`, **파일 ↔ 폴더 충돌은 overwrite 여도** `destinationExists`(사용자 폴더 트리를 지우지 않는다), 파일 ↔ 파일 충돌은 `overwrite == false` 면 `destinationExists`. 통과하면 폴더는 합치고 파일은 `rename(2)` 로 **원자적으로** 교체한다(옛 파일이 지워진 채 남는 순간이 없다).
 5. 실패 · 취소 시 임시 폴더를 지운다 (`defer` 로 보장).
 
-> 이미 있는 폴더에 합칠 때(4번 두 번째) 옮기는 도중 입출력 에러가 나면 일부만 옮겨질 수 있다. 이 경우만 "최선의 노력"이다.
+> 이미 있는 폴더에 합칠 때(4번 두 번째) 옮기는 도중 입출력 에러가 나면 일부만 옮겨질 수 있다 — 각 파일은 옛 것 또는 새 것 중 하나다. 이 경우만 "최선의 노력"이다.
 
 - `ArchiveReader.extract(_:to:)`(항목 하나)와 `data(for:)` 도 같은 규칙이다 — 검증 전 내용은 밖으로 나오지 않는다. `data(for:)` 는 메모리 버퍼에 풀고 검증이 끝나야 돌려준다.
 
@@ -527,7 +548,7 @@ public enum PasswordResponse: Sendable {
 ## 10. zip 형식
 
 ### 10.1 읽기
-1. 파일 끝 22 + 65,535 바이트 안에서 **EOCD**(`0x06054b50`)를 뒤에서부터 찾는다. 찾은 EOCD 의 주석 길이가 파일 끝과 정확히 맞아야 한다(주석 안의 가짜 시그니처 방지).
+1. 파일 끝 22 + 65,535 바이트 안에서 **EOCD**(`0x06054b50`)를 뒤에서부터 찾는다. 후보는 ⓐ 주석 길이가 파일 끝과 정확히 맞고 ⓑ 목차 끝(오프셋 + 크기)이 EOCD 바로 앞이거나 Zip64 locator 가 바로 앞에 있어야 한다 — 주석 안에 넣은 가짜 EOCD 를 거른다. (앞에 다른 데이터가 붙은 자체 압축 해제 파일은 지원하지 않는다.)
 2. EOCD 바로 앞에 **Zip64 EOCD locator**(`0x07064b50`)가 있으면 → **Zip64 EOCD**(`0x06064b50`)를 읽어 항목 수 · 목차 크기 · 목차 오프셋을 64비트로 얻는다.
 3. **목차**(`0x02014b50`)를 끝까지 읽는다. 로컬 헤더를 앞에서부터 훑지 않는다 — data descriptor(플래그 bit 3)를 쓴 zip 도 목차에는 크기가 있다.
 4. 항목의 32비트 필드가 `0xFFFFFFFF`(디스크 번호는 `0xFFFF`)면 **Zip64 extra field(`0x0001`)** 에서 값을 꺼낸다. 순서는 해제 크기 → 압축 크기 → 로컬 헤더 오프셋 → 디스크 번호이고, **`0xFFFFFFFF` 인 필드만** 들어 있다.
@@ -544,14 +565,17 @@ public enum PasswordResponse: Sendable {
 - `version needed`: 저장 10 · DEFLATE 20 · Zip64 45 · AES 51 — **여러 조건이면 가장 큰 값.**
 - `version made by` = Unix(3) · 6.3. Unix 권한을 `external attributes` 상위 16비트에 넣는다 (원본 권한, 없으면 파일 `0644` · 폴더 `0755`).
 - 날짜: DOS 날짜·시간 (1980년 이전은 1980-01-01, 초는 2초 단위) + **0x5455 확장 시각**(수정 시각, 초 단위 Unix 시간)을 함께 쓴다.
-- DEFLATE 결과가 원본보다 커지면 그 항목만 **저장 방식으로 다시 쓴다** (원본을 다시 읽는다).
+- 원본이 128 KiB 이상이면 **앞 64 KiB 를 먼저 압축해 보고** 97% 이상이면 처음부터 저장 방식으로 쓴다 — 사진 · 영상 · zip 을 두 번 쓰지 않게. 그래도 DEFLATE 결과가 원본 이상이면 그 항목만 **저장 방식으로 다시 쓴다** (안전망).
+- 원본 파일은 `O_NOFOLLOW` 로 연다 — lstat 으로 확인한 뒤 링크로 바뀌어도 따라가지 않는다.
 - 빈 폴더는 `이름/` 항목으로 넣는다. 심볼릭 링크를 만나면 `unsupported("symlink")`.
 - 원자성: 파일 저장소는 같은 폴더의 임시 파일에 쓰고 `commit()` 에서 최종 경로로 옮긴다.
 
 ### 10.3 스트리밍
 - **64 KiB 단위**로 읽고 쓴다. 파일 전체를 메모리에 올리지 않는다 (메모리 저장소 제외).
 - DEFLATE: `compression_stream` + `COMPRESSION_ZLIB` (= 헤더 없는 raw DEFLATE, zip 이 요구하는 형식).
-- CRC32: IEEE 다항식 `0xEDB88320`, slice-by-8 테이블로 직접 구현 (zlib 의존 없음).
+- CRC32: IEEE 다항식 `0xEDB88320`, **slice-by-8** 테이블로 직접 구현 (zlib 의존 없음). 공개 타입 `CRC32` — 사용자 스킴에서도 쓸 수 있다.
+- 압축 크기 0 인 빈 항목은 방식과 관계없이 빈 내용으로 본다(해제기를 부르지 않는다).
+- async 해제는 항목 사이마다 `Task.yield()` 한다. 항목 하나를 푸는 동안은 동기 작업이다.
 
 ---
 
@@ -580,6 +604,7 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 - `CCKeyDerivationPBKDF(kCCPBKDF2, password, salt, kCCPRFHmacAlgSHA1, 1000, out, 2 × keyLength + 2)`
 - 출력을 `AES 키 | HMAC 키 | 확인값 2` 로 나눈다 (키 길이 16 / 24 / 32).
 - salt 는 항목마다 `SecRandomCopyBytes` 로 새로 만든다.
+- 파생 키(`AESKeys`)는 참조 타입이고 해제될 때 0 으로 덮는다(최선의 노력).
 
 **AES-CTR — 🔴 가장 틀리기 쉬운 곳**
 - 카운터는 128비트, **1 에서 시작해 little-endian 으로 증가**한다. nonce 없음(나머지 0).
@@ -613,51 +638,46 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 
 ## 12. 테스트
 
+픽스처는 **테스트 중에 시스템 도구로 만든다** (도구가 없으면 그 테스트만 skip). 바이너리 픽스처를 커밋하지 않는다. 공격 zip 은 테스트 안의 원시 바이트 빌더(`RawZip`)로 만든다.
+
 | 분류 | 내용 |
 | --- | --- |
-| 호환 픽스처 (해제) | `zip`(Info-ZIP) · `ditto -c -k` · `python3 zipfile` — 저장/DEFLATE, data descriptor, 빈 폴더, 한글 이름, bit 11 없는 UTF-8 |
-| Zip64 픽스처 | `zip -fz`(강제 Zip64) · `python3 zipfile(force_zip64=True)` · 항목 65,536개 zip |
-| 인코딩 픽스처 | CP949 이름(bit 11 없음) · CP437 이름 · 0x7075 병기 · 0x7075 CRC 불일치 · NFD 이름 |
-| AES 픽스처 | **`7zz` 로 만든 AES-128/192/256** — 우리 구현과 독립된 기준. 비밀번호 맞음 / 틀림 / 없음 / 항목별 다른 비밀번호 / 섞인 zip |
-| ZipCrypto 픽스처 | `zip -P` — ASCII 비밀번호, **CP949 비밀번호**(`iconv` 로 바이트 생성), data descriptor 사용본 |
-| 공격 픽스처 | `../` · 절대 경로 · 드라이브 문자 · 심볼릭 링크 · 중복 · 대소문자/NFD 중복 · 파일·폴더 이름 충돌 · 로컬/목차 이름 불일치 · 선언 크기 초과 · 비율 폭탄 · 겹침 폭탄 · 잘린 파일 · 주석 안 가짜 EOCD · 멀티 디스크 · PKWARE SES |
-| 왕복 | 생성 → 해제: 압축 방식 × 암호화 방식 × Zip64 모드 × 이름 인코딩 조합, 빈 파일, 빈 폴더, 경계 크기(0 · 1 · 65,535 · 65,536 · 65,537 바이트) |
-| 교차 검증 (생성) | 비암호화 · ZipCrypto 산출물 → `/usr/bin/unzip -t` 통과. AES 산출물 → `7zz t -p…` 통과 (`7zz` 없으면 skip) |
-| 대용량 Zip64 | 4 GiB 초과 항목 왕복 — 환경 변수 `SATCHEL_LARGE_TESTS=1` 일 때만 |
-| 원자성 · 취소 | 중간 항목 HMAC 실패 · 취소 · 제공자 `.cancel` 시 해제 폴더가 호출 전과 같고 임시 폴더가 남지 않음 |
-| 제공자 흐름 | 틀림 → 재시도 · 맞은 비밀번호 재사용(한 번만 묻는지) · `.skipEntry` · `.passwords` 후보 |
-| 확장 지점 | 테스트용 사용자 코덱(예: XOR "압축")과 사용자 스킴을 등록해 왕복 — 확장 지점이 실제로 동작하는지 |
-| 비밀 노출 | `Password.description`, 에러 문자열, `dump()` 결과에 비밀번호가 없는지 |
+| 호환 (해제) | Info-ZIP `zip`(일반 · 표준 입력 스트림 = data descriptor) · `ditto -c -k` · `python3 zipfile`(unseekable 스트림 = data descriptor) · `bsdtar --format zip` |
+| 호환 (생성) | Satchel 산출물 → `unzip -t` · `python3 testzip()` · `unzip` 해제 · `bsdtar` 해제 후 트리 비교 |
+| 왕복 | 저장/DEFLATE × Zip64 automatic/always, 빈 파일 · 빈 폴더 · 한글 이름 · 64 KiB 경계(65,536 · 65,537), 압축 안 되는 데이터 → 저장 방식 대체, 권한 · 수정 시각 · 주석 |
+| AES (해제) | **`bsdtar`(libarchive) 로 만든 AES-256 · AES-128** — 독립 구현. 맞음 / 틀림 / 없음 |
+| AES (생성) | Satchel AES-128/192/256 → **`bsdtar` 로 해제** (독립 구현 교차 검증), 틀린 비밀번호는 bsdtar 도 거부 · `7zz t` (설치 시) |
+| ZipCrypto | `bsdtar` · `zip -P` 로 만든 것 해제, **CP949 비밀번호**(셸 printf 로 원시 바이트), Satchel 산출물 → `unzip -P` |
+| 비밀번호 후보 | CP949 후보 · NFD 후보 (Process 인수가 NFD 로 바뀌는 현상으로 재현) |
+| 무결성 | AES 암호문 1비트 변조 → `corrupted(authentication failed)` |
+| Zip64 | `.always` 산출물 → unzip · python · bsdtar, python `force_zip64` 읽기, Info-ZIP `-fz` 읽기, **항목 65,540개**(Zip64 EOCD), `.never` 거부, `maxEntryCount`, **4 GiB 초과 항목 왕복**(`SATCHEL_LARGE_TESTS=1`) |
+| 인코딩 | CP949 이름(bit 11 없음) · bit 11 없는 UTF-8 · CP437 대체 · 강제 인코딩 · 0x7075 CRC 일치/불일치 · CP949 쓰기 + 0x7075 (python `metadata_encoding='cp949'` 로 확인) · 이모지 CP949 실패 · NFD → NFC |
+| 공격 | `../` · `a/../../` · `..\` · 절대 경로 · 드라이브 문자 · UNC · 제어 문자 · 빈 이름 · 심볼릭 링크 · 중복 · 대소문자 중복 · NFC/NFD 중복 · 파일/폴더 이름 충돌 · 로컬/목차 이름 불일치 · 선언 크기 초과 · 비율 · 총량 상한 · 겹침 · 잘린 파일 · 주석 안 가짜 EOCD · 멀티 디스크 · PKWARE SES · 미지원 압축 방식 · 대상 폴더의 기존 심볼릭 링크 · setuid 제거 · 쓰기 쪽 위험 이름 거부 |
+| 원자성 | 중간 항목 CRC 실패 · 비밀번호 틀림 · 취소 시 대상 폴더 미생성 · 임시 폴더 없음 · 폴더 밖에 쓰지 않음 · 버린 writer 는 파일을 남기지 않음 |
+| 제공자 | 틀림 → 재시도(시도 번호·이유) · 맞은 비밀번호 재사용(한 번만 묻는지) · `options.password` 우선 · `.passwords` 후보 · `.skipEntry` · `.cancel` · Task 취소 |
+| API | 대상 폴더 충돌/덮어쓰기(합치기) · 기존 zip 보호 · 항목 단위 API · 다른 zip 의 Entry 거부 · 진행률(생성·해제 바이트 일치) · `Progress.cancel()` · 숨김 파일 옵션 |
+| 확장 지점 | **공개 API 만으로**(`@testable` 없이) 사용자 코덱 · 사용자 스킴 등록 → 왕복, 등록 안 한 쪽은 `unsupported` |
+| 리뷰 회귀 | 조작된 Zip64 locator 오프셋(오버플로 트랩 없이 거부) · 빈 비밀번호 = 틀림 · overwrite 가 폴더를 파일로 바꾸지 않음 · 깊은 경로 거부 + 트리 성능 · 쓰기가 등록소를 따름 · 내장 스킴 교체 시 우선순위 유지 · group/other 쓰기 제거 · 데이터 없는 DEFLATE 빈 항목 · slice-by-8 CRC 기준값 · 압축 안 되는 데이터 미리 판정 · 메모리 API 상한 · 항목 단위 API 겹침 거부 |
+| 비밀 노출 | `Password` 의 `description` · `debugDescription` · `dump()`, 옵션 `dump()`, 에러 문자열에 비밀번호 없음 |
 
-- 🔴 **AES 는 반드시 7-Zip 기준으로 교차 검증한다.** 암호화와 복호화를 둘 다 우리가 짜면 같은 실수(예: §11.1 카운터 방향)가 서로 맞물려 왕복 테스트를 통과한다.
-- 픽스처는 **합성 파일만** 쓴다. `Scripts/make-fixtures.sh` 로 언제든 다시 만든다.
+- 🔴 **AES 는 반드시 독립 구현으로 교차 검증한다.** 암호화와 복호화를 둘 다 우리가 짜면 같은 실수(예: §11.1 카운터 방향)가 서로 맞물려 왕복 테스트를 통과한다. macOS 기본 `bsdtar`(libarchive 3.7) 가 AES-128/256 · ZipCrypto 를 쓰고 읽을 수 있어 7-Zip 없이도 검증된다. AES-192 는 libarchive 가 쓰지 못해 해제 방향만 bsdtar 로 확인한다.
+- 픽스처는 **합성 데이터만** 쓴다. 실제 서비스에서 받은 zip 은 넣지 않는다.
 
----
+## 13. 샘플 앱 (`Example/SatchelExample.swiftpm`)
 
-## 13. 샘플 앱 (`Example/`)
-
-- SwiftUI · iOS 16+ (샘플이라 최소 버전 자유).
+- Swift Playgrounds 앱 패키지 형식 — Xcode 로 폴더를 열면 iOS 앱으로 실행된다. 라이브러리는 `../..` 로컬 경로로 연결.
+- SwiftUI · iOS 16+ (샘플이라 최소 버전 자유). 서명 팀은 비워 두었다 — 실기기 실행 시 각자 고른다.
 - **열기**: 파일 선택 → 항목 목록(암호화 여부 · 방식 · Zip64 · 크기 표시).
 - **해제**: `PasswordProvider` 를 구현한 `@MainActor` 객체가 `SecureField` 알림창을 띄운다. 틀리면 "다시 입력"(시도 횟수 표시), 건너뛰기 · 취소 버튼. 진행률 막대 + 취소.
 - **생성**: 파일 선택 → 압축 방식 · 암호화 방식(AES 강도 / ZipCrypto 는 경고 문구와 함께) · 이름 인코딩 · Zip64 모드 → 공유 시트.
 
 ---
 
-## 14. 진행 순서 · 릴리스
+## 14. 릴리스
 
-| 버전 | 내용 | 완료 기준 |
-| --- | --- | --- |
-| **0.1.0** | 읽기 코어 — 형식(Zip64 포함) · 저장/DEFLATE · §8 안전 · §9 원자성 · 이름 인코딩(UTF-8 · 0x7075 · CP949 · CP437) · `ArchiveReader` · `Zip.extract`(동기) | 호환 · Zip64 · 인코딩 · 공격 픽스처 통과 |
-| 0.2.0 | 쓰기 코어 — 저장/DEFLATE · Zip64 3모드 · CP949 쓰기 + 0x7075 · NFC · `ArchiveWriter` · `Zip.create` | 왕복 + `unzip -t` 통과 |
-| 0.3.0 | 암호화 — `EncryptionScheme` · WinZip AES 128/192/256 · ZipCrypto · `Password` 후보 인코딩 | 7-Zip · `zip -P` 픽스처 + `7zz t` 통과 |
-| 0.4.0 | 비밀번호 제공자 · async API · 진행률 · 취소 · `verify` · `data(for:)` · 메모리 저장소 | 제공자 흐름 · 원자성 · 취소 테스트 통과 |
-| 0.5.0 | 샘플 앱 · README 사용 예 · DocC | 샘플에서 전 흐름 동작 |
-
-- 확장 지점 프로토콜(§5)은 **0.1.0 부터 공개**한다. 내장 코덱이 첫 사용자다. 0.3.0 에서 암호화 스킴이 붙을 때 프로토콜이 바뀔 수 있다(0.x).
+- **0.1.0 에 전부 넣는다** — §1.1 의 모든 기능 · §5 확장 지점 공개 · 샘플 앱.
 - 태그는 `0.1.0` 형식(`v` 접두어 없음 — SPM 이 그대로 읽는다).
-- 0.1.0 만으로 "외부에서 받은 zip 을 안전하게 푸는" 용도는 충분하다.
-
----
+- `1.0.0` 전까지는 마이너 버전에서 공개 API(확장 지점 포함)가 바뀔 수 있다. 쓰는 쪽은 `exact:` 로 고정한다.
 
 ## 15. 공개 전 점검 (push 전 매번)
 
@@ -674,3 +694,5 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 | --- | --- |
 | 2026-09-29 | 초안 — 압축 · 해제 · AES-256 최소 범위 |
 | 2026-09-29 | 범위 확장 — AES 128/192 · ZipCrypto(생성은 opt-in) · Zip64 읽기/쓰기 · CP949(이름·비밀번호) · 비밀번호 제공자 · 확장 지점 공개(0.1.0 부터) · Reader/Writer · 메모리 저장소 · 진행률/취소. 버전 0.1.0 시작, 릴리스 단위 재편 |
+| 2026-09-29 | 0.1.0 구현 — 릴리스 단일화, `ReadOptions` 분리 · `CreateOptions`→`WriteOptions`, 스킴 우선순위(나중 등록 먼저), 비밀번호 NFC/NFD 후보, EOCD 정합성 검사, 대상 폴더 기존 링크 거부 · `O_NOFOLLOW`, 파일 `u+rw` 보장, 테스트 픽스처를 시스템 도구로 생성(bsdtar 를 AES 독립 기준으로), 샘플 앱 `.swiftpm` |
+| 2026-09-29 | 코드 리뷰(5개 차원, 24건) 반영 — Zip64 locator 오버플로(P1), 경로 트리, 원자적 파일 교체 · 파일↔폴더 충돌 거부, 쓰기 경로 등록소 경유, `storesCRC(for:)`, 스킴 제자리 교체, 빈 비밀번호 = 틀림, `allowedEncryption` 기본 nil, `ExtractLimits.inMemory`, 8 KiB 해제 입력, 압축률 미리 판정, `O_NOFOLLOW` 원본 읽기, group/other 쓰기 제거, slice-by-8 CRC, 파생 키 지우기 |
