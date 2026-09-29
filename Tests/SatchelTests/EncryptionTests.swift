@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import Satchel
 
-/// AES · ZipCrypto — 독립 구현(libarchive `bsdtar`, Info-ZIP `zip`/`unzip`)과 교차 검증한다.
+/// WinZip AES — 독립 구현(libarchive `bsdtar`)과 교차 검증한다. ZipCrypto 는 지원하지 않는다(명시적으로 거부).
 /// 암호화·복호화를 둘 다 우리가 짜면 같은 실수(예: CTR 카운터 방향)가 서로 맞물려 왕복을 통과한다.
 final class EncryptionTests: XCTestCase {
     let secret = "s3cret-비번"
@@ -17,8 +17,8 @@ final class EncryptionTests: XCTestCase {
 
     // MARK: 해제 — 다른 도구가 암호화
 
-    func testExtractBsdtarAES256AndAES128AndZipCrypto() throws {
-        for (encryption, id) in [("aes256", EncryptionIdentifier.winZipAES), ("aes128", .winZipAES), ("zipcrypt", .zipCrypto)] {
+    func testExtractBsdtarAES256AndAES128() throws {
+        for (encryption, id) in [("aes256", EncryptionIdentifier.winZipAES), ("aes128", .winZipAES)] {
             let dir = try TempDir()
             let zip = try bsdtarArchive(encryption, in: dir, password: "pw1234")
             let reader = try ArchiveReader(url: zip)
@@ -33,7 +33,7 @@ final class EncryptionTests: XCTestCase {
     }
 
     func testWrongAndMissingPassword() throws {
-        for encryption in ["aes256", "zipcrypt"] {
+        for encryption in ["aes256", "aes128"] {
             let dir = try TempDir()
             let zip = try bsdtarArchive(encryption, in: dir, password: "right")
             assertZipError(try Zip.extract(zip, to: dir.path("x"))) { if case .passwordRequired = $0 { return true }; return false }
@@ -45,24 +45,37 @@ final class EncryptionTests: XCTestCase {
         }
     }
 
-    func testExtractInfoZipPassword() throws {
+    /// ZipCrypto(전통 PKWARE 암호)는 지원하지 않는다 — 조용히 실패하지 않고 이유를 알려 준다.
+    func testZipCryptoIsRejectedClearly() throws {
         let dir = try TempDir()
         try dir.write("secret.txt", "classified\n")
-        try Tools.require(Tools.zip, ["-q", "-P", "zippw", "out.zip", "secret.txt"], cwd: dir.url)
-        let reader = try ArchiveReader(url: dir.path("out.zip"))
-        XCTAssertEqual(reader.entries[0].encryption, .zipCrypto)
-        XCTAssertEqual(try reader.data(for: reader.entries[0], password: Password("zippw")), Data("classified\n".utf8))
+        try Tools.require(Tools.zip, ["-q", "-P", "zippw", "infozip.zip", "secret.txt"], cwd: dir.url)
+        try Tools.require(Tools.bsdtar, ["--format", "zip", "--options", "zip:encryption=zipcrypt",
+                                        "--passphrase", "zippw", "-cf", "bsdtar.zip", "secret.txt"], cwd: dir.url)
+        for name in ["infozip.zip", "bsdtar.zip"] {
+            let reader = try ArchiveReader(url: dir.path(name))
+            XCTAssertEqual(reader.entries[0].encryption?.rawValue, "zipcrypto", name)
+            assertZipError(try reader.data(for: reader.entries[0], password: Password("zippw"))) {
+                if case .unsupported(let why) = $0 { return why.contains("ZipCrypto") }; return false
+            }
+            var options = ExtractOptions()
+            options.password = Password("zippw")
+            assertZipError(try reader.extractAll(to: dir.path("out-\(name)"), options: options)) {
+                if case .unsupported(let why) = $0 { return why.contains("ZipCrypto") }; return false
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path("out-\(name)").path))
+        }
     }
 
     func testCP949PasswordCandidate() throws {
+        // CP949 바이트로 암호화한 AES zip — 기본 후보(UTF-8 → CP949 → CP437)에서 CP949 가 맞는다.
         let dir = try TempDir()
         try dir.write("k.txt", "korean password\n")
         let pw = "비밀"
         let cp949 = try XCTUnwrap(pw.data(using: TextCodec.cp949))
-        let r = try Tools.sh("\(Tools.zip ?? "zip") -q -P \"$(printf '\(printfOctal([UInt8](cp949)))')\" out.zip k.txt", cwd: dir.url)
+        let r = try Tools.sh("\(Tools.bsdtar ?? "bsdtar") --format zip --options zip:encryption=aes256 --passphrase \"$(printf '\(printfOctal([UInt8](cp949)))')\" -cf out.zip k.txt", cwd: dir.url)
         XCTAssertEqual(r.status, 0, r.stderr)
         let reader = try ArchiveReader(url: dir.path("out.zip"))
-        // 기본 후보: UTF-8 → CP949 → CP437. UTF-8 은 빠른 확인에서 떨어지고 CP949 가 맞는다.
         XCTAssertEqual(try reader.data(for: reader.entries[0], password: Password(pw)), Data("korean password\n".utf8))
         assertZipError(try reader.data(for: reader.entries[0], password: Password(pw, encodings: [.utf8]))) {
             if case .wrongPassword = $0 { return true }; return false
@@ -100,19 +113,6 @@ final class EncryptionTests: XCTestCase {
         }
     }
 
-    func testCreatedZipCryptoReadableByUnzip() throws {
-        let dir = try TempDir()
-        let src = try makeSampleTree(in: dir)
-        var options = WriteOptions()
-        options.encryption = .legacyZipCrypto
-        options.password = Password("legacy")
-        try Zip.create(at: dir.path("out.zip"), from: [src], options: options)
-        try Tools.require(Tools.unzip, ["-tq", "-P", "legacy", "out.zip"], cwd: dir.url)
-        try dir.mkdir("u")
-        try Tools.require(Tools.unzip, ["-q", "-P", "legacy", "../out.zip"], cwd: dir.path("u"))
-        XCTAssertEqual(try TempDir.snapshot(src), try TempDir.snapshot(dir.path("u/src")))
-    }
-
     func testCreatedAESVerifiedBy7Zip() throws {
         guard Tools.sevenZip != nil else { throw XCTSkip("7zz not installed") }
         let dir = try TempDir()
@@ -127,7 +127,7 @@ final class EncryptionTests: XCTestCase {
     // MARK: 왕복 · 조합
 
     func testRoundTripEveryScheme() throws {
-        let methods: [EncryptionMethod] = [.aes(.bits128), .aes(.bits192), .aes(.bits256), .legacyZipCrypto]
+        let methods: [EncryptionMethod] = [.aes(.bits128), .aes(.bits192), .aes(.bits256)]
         for method in methods {
             for compression in [CompressionMethod.store, .deflate] {
                 var options = WriteOptions()
@@ -180,9 +180,9 @@ final class EncryptionTests: XCTestCase {
         let writer = ArchiveWriter()
         try writer.add(Data("open".utf8), as: "open.txt")
         try writer.add(Data("one".utf8), as: "one.txt", options: EntryOptions(encryption: .aes(), password: Password("1111")))
-        try writer.add(Data("two".utf8), as: "two.txt", options: EntryOptions(encryption: .legacyZipCrypto, password: Password("2222")))
+        try writer.add(Data("two".utf8), as: "two.txt", options: EntryOptions(encryption: .aes(.bits128), password: Password("2222")))
         let reader = try ArchiveReader(data: try writer.finishData())
-        XCTAssertEqual(reader.entries.map(\.encryption), [nil, .winZipAES, .zipCrypto])
+        XCTAssertEqual(reader.entries.map(\.encryption), [nil, .winZipAES, .winZipAES])
         XCTAssertEqual(try reader.data(for: reader.entries[0]), Data("open".utf8))
         XCTAssertEqual(try reader.data(for: reader.entries[1], password: Password("1111")), Data("one".utf8))
         XCTAssertEqual(try reader.data(for: reader.entries[2], password: Password("2222")), Data("two".utf8))
@@ -190,13 +190,13 @@ final class EncryptionTests: XCTestCase {
 
     func testDisallowedEncryption() throws {
         let writer = ArchiveWriter()
-        try writer.add(Data("x".utf8), as: "x", options: EntryOptions(encryption: .legacyZipCrypto, password: Password("p")))
+        try writer.add(Data("x".utf8), as: "x", options: EntryOptions(encryption: .aes(), password: Password("p")))
         let dir = try TempDir()
         try writer.finishData().write(to: dir.path("z.zip"))
         var options = ExtractOptions()
         options.password = Password("p")
-        options.allowedEncryption = [.winZipAES]
-        assertZipError(try Zip.extract(dir.path("z.zip"), to: dir.path("x"), options: options)) { $0 == .disallowedEncryption(.zipCrypto) }
+        options.allowedEncryption = []
+        assertZipError(try Zip.extract(dir.path("z.zip"), to: dir.path("x"), options: options)) { $0 == .disallowedEncryption(.winZipAES) }
     }
 
     func testEncryptionWithoutPasswordIsRejected() throws {

@@ -72,8 +72,8 @@ final class ReviewRegressionTests: XCTestCase {
     /// 쓰기도 등록소를 거친다 — 뺀 스킴은 쓸 수 없다.
     func testWriterHonorsRegistry() throws {
         var options = WriteOptions()
-        options.registry = ZipRegistry(codecs: [StoreCodec(), DeflateCodec()], schemes: [WinZipAESScheme()])
-        options.encryption = .legacyZipCrypto
+        options.registry = ZipRegistry(codecs: [StoreCodec(), DeflateCodec()], schemes: [])
+        options.encryption = .aes()
         options.password = Password("p")
         let writer = ArchiveWriter(options: options)
         assertZipError(try writer.add(Data("x".utf8), as: "x")) { if case .unsupported = $0 { return true }; return false }
@@ -91,8 +91,9 @@ final class ReviewRegressionTests: XCTestCase {
             func makeDecryptor(password: [UInt8], header: EntryHeader, prefix: [UInt8]) throws -> DecryptorResult { .wrongPassword }
             func makeEncryptor(password: [UInt8], context: EncryptionContext) throws -> any EntryEncryptor { fatalError() }
         }
-        let r = ZipRegistry.standard.registering(Dummy(identifier: custom)).registering(ZipCryptoScheme())
-        XCTAssertEqual(r.schemes.map(\.identifier), [custom, .winZipAES, .zipCrypto])
+        let r = ZipRegistry.standard.registering(Dummy(identifier: custom)).registering(WinZipAESScheme(strength: .bits128))
+        XCTAssertEqual(r.schemes.map(\.identifier), [custom, .winZipAES])
+        XCTAssertEqual((r.schemes[1] as? WinZipAESScheme)?.strength, .bits128)
     }
 
     /// 외부 zip 이 world-writable 권한을 강요하지 못한다.
@@ -126,8 +127,8 @@ final class ReviewRegressionTests: XCTestCase {
         XCTAssertEqual(CRC32.checksum(Array("123456789".utf8)), 0xCBF4_3926)
         for length in [0, 1, 7, 8, 9, 15, 16, 17, 1_000, 65_537] {
             let bytes = randomBytes(length)
-            var reference: UInt32 = 0xFFFF_FFFF
-            for b in bytes { reference = CRC32.step(reference, b) }
+            var reference: UInt32 = 0xFFFF_FFFF   // 바이트 단위 기준 구현
+            for b in bytes { reference = CRC32.tables[Int((reference ^ UInt32(b)) & 0xFF)] ^ (reference >> 8) }
             XCTAssertEqual(CRC32.checksum(bytes), reference ^ 0xFFFF_FFFF, "length \(length)")
             var split = CRC32()
             split.update(Array(bytes.prefix(length / 3)))

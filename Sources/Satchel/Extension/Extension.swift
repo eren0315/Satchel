@@ -27,7 +27,6 @@ public struct EncryptionIdentifier: Hashable, Sendable, RawRepresentable, Custom
     public init(rawValue: String) { self.rawValue = rawValue }
 
     public static let winZipAES = EncryptionIdentifier(rawValue: "winzip-aes")
-    public static let zipCrypto = EncryptionIdentifier(rawValue: "zipcrypto")
 
     public var description: String { rawValue }
 }
@@ -100,7 +99,7 @@ public protocol EntryDecryptor: ByteTransform {
     func verify(trailer: [UInt8]) throws
     /// true 면 스킴이 무결성을 보장하므로 CRC 검사를 건너뛴다 (AE-2).
     var providesIntegrity: Bool { get }
-    /// true 면 무결성 실패를 "비밀번호 틀림"으로 본다 (ZipCrypto — 틀린 비밀번호와 손상을 구분할 수 없다).
+    /// true 면 무결성 실패를 "비밀번호 틀림"으로 본다 — 무결성 수단이 CRC 뿐이라 틀린 비밀번호와 손상을 구분할 수 없는 스킴용.
     var integrityFailureIndicatesWrongPassword: Bool { get }
 }
 
@@ -134,7 +133,7 @@ public protocol EncryptionScheme: Sendable {
     func makeDecryptor(password: [UInt8], header: EntryHeader, prefix: [UInt8]) throws -> DecryptorResult
 
     // 쓰기
-    /// 암호화 전에 원문 CRC 가 필요한가 (ZipCrypto).
+    /// 암호화 전에 원문 CRC 가 필요한가 (헤더에 CRC 기반 확인값을 쓰는 스킴). true 면 원본을 한 번 더 읽는다.
     var requiresCRCBeforeEncryption: Bool { get }
     func makeEncryptor(password: [UInt8], context: EncryptionContext) throws -> any EntryEncryptor
 }
@@ -178,10 +177,11 @@ public struct ZipRegistry: Sendable {
         self.schemes = schemes
     }
 
-    /// 저장 · DEFLATE · WinZip AES · ZipCrypto.
+    /// 저장 · DEFLATE · WinZip AES. (ZipCrypto 는 넣지 않는다 — 깨진 암호이고, 앱이 직접 구현한 암호화가 되어
+    /// 수출 규정 판단을 흐린다. 필요하면 `EncryptionScheme` 으로 구현해 `registering(_:)` 한다.)
     public static let standard = ZipRegistry(
         codecs: [StoreCodec(), DeflateCodec()],
-        schemes: [WinZipAESScheme(), ZipCryptoScheme()])
+        schemes: [WinZipAESScheme()])
 
     /// 같은 `methodID` 가 있으면 교체한다.
     public func registering(_ codec: any CompressionCodec) -> ZipRegistry {
@@ -192,8 +192,8 @@ public struct ZipRegistry: Sendable {
     }
 
     /// 같은 `identifier` 가 있으면 **그 자리에서** 교체하고, 새 identifier 는 **맨 앞에** 넣는다.
-    /// 판정은 앞에서부터 `matches` 를 묻는다 — ZipCrypto 처럼 넓게 맞는 내장 스킴은 뒤에 남아
-    /// 사용자 스킴을 가리지 않는다 (내장 스킴을 교체해도 순서는 그대로).
+    /// 판정은 앞에서부터 `matches` 를 묻는다 — 먼저 등록된(넓게 맞을 수 있는) 스킴은 뒤에 남아
+    /// 새 스킴을 가리지 않는다 (기존 스킴을 교체해도 순서는 그대로).
     public func registering(_ scheme: any EncryptionScheme) -> ZipRegistry {
         var copy = self
         if let i = copy.schemes.firstIndex(where: { $0.identifier == scheme.identifier }) {

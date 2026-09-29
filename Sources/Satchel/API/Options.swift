@@ -17,7 +17,7 @@ public struct ExtractOptions: Sendable {
     public var password: Password?
     /// 같은 경로에 파일이 있으면 false: `destinationExists` / true: 교체. 폴더는 합친다.
     public var overwrite: Bool = false
-    /// 허용할 암호화 방식. nil = 등록소(`ReadOptions.registry`)에 등록된 전부. 예: `[.winZipAES]` 로 ZipCrypto 거부.
+    /// 허용할 암호화 방식. nil = 등록소(`ReadOptions.registry`)에 등록된 전부. 예: `[]` 로 암호화 항목을 전부 거부.
     public var allowedEncryption: Set<EncryptionIdentifier>?
     public var limits: ExtractLimits = .default
     public var restoresModificationDate: Bool = true
@@ -92,9 +92,6 @@ public enum EncryptionMethod: Sendable, Hashable {
     case none
     /// WinZip AES (AE-2).
     case aes(AESStrength = .bits256)
-    /// ⚠️ 전통 PKWARE 암호 — **깨진 방식**이다. 알려진 공격으로 비밀번호 없이 풀린다.
-    /// 운영체제 기본 압축 도구로 열어야 하는 경우에만 쓴다.
-    case legacyZipCrypto
     /// 등록소(`ZipRegistry`)에서 스킴을 찾는다.
     case custom(EncryptionIdentifier)
 }

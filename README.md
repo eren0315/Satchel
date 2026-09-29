@@ -1,10 +1,10 @@
 # Satchel
 
-순수 Swift zip 라이브러리 — **압축 · 해제 · 암호화(WinZip AES / ZipCrypto) · Zip64 · CP949**.
+순수 Swift zip 라이브러리 — **압축 · 해제 · 암호화(WinZip AES) · Zip64 · CP949**.
 외부 의존성 없이 `Foundation` · `Compression` · `CommonCrypto` · `Security` 만 씁니다.
 
 - 외부에서 받은 zip 을 **안전하게** 풉니다 — 경로 탈출 · 심볼릭 링크 · 압축 폭탄 · 무결성 위반 차단, **전부 되거나 아무것도 남지 않는** 해제
-- WinZip AES 128/192/256 (생성 기본값 AES-256 · AE-2), ZipCrypto 해제 (생성은 직접 켤 때만)
+- WinZip AES 128/192/256 (생성 기본값 AES-256 · AE-2) — 암호화는 전부 OS 의 `CommonCrypto` 로 한다
 - 비밀번호 제공자 — 항목별 비밀번호 · 재시도 · 건너뛰기 · 취소, UTF-8 / CP949 / CP437 · NFC / NFD 후보 자동 시도
 - Zip64 읽기 · 쓰기 (4 GiB 초과 항목, 65,535개 초과 항목)
 - 한국어 파일 이름 — CP949 읽기 · 쓰기, 유니코드 경로 extra field(0x7075), NFC 정규화
@@ -94,7 +94,8 @@ read.registry = ZipRegistry.standard.registering(MyCodec()).registering(MyScheme
 
 ## 보안 메모
 
-- **ZipCrypto 는 깨진 암호입니다.** 알려진 공격으로 비밀번호 없이 풀립니다. `.legacyZipCrypto` 는 운영체제 기본 도구로 열어야 할 때만 쓰세요.
+- **ZipCrypto(전통 zip 암호)는 지원하지 않습니다.** 알려진 공격으로 비밀번호 없이 풀리는 깨진 암호이고, 라이브러리가 직접 구현한 암호화가 되어 앱의 수출 규정(암호화) 판단을 흐립니다. ZipCrypto 로 잠긴 zip 은 `ZipError.unsupported` 로 이유를 알려 줍니다. 꼭 필요하면 `EncryptionScheme` 으로 구현해 등록할 수 있습니다.
+- Satchel 의 암호화는 AES · PBKDF2 · HMAC-SHA1 모두 OS 의 `CommonCrypto` 를 호출합니다(자체 구현 암호 알고리즘 없음). 앱의 수출 규정 판단은 App Store Connect 질문지와 담당자 몫입니다.
 - 해제 기본 상한: 총 8 GiB(메모리로 푸는 `data(for:)` 는 512 MiB), 항목별 압축 비율 1,000:1, 항목 100,000개, 경로 깊이 256 (`ExtractLimits` · `ReadOptions` 로 조절).
 - 외부 zip 의 권한은 rwx 만 복원하고 group/other 쓰기와 setuid 류는 지웁니다. 대상 폴더 안의 기존 심볼릭 링크를 거쳐 쓰지 않습니다.
 - `Password` 는 `description` · `dump()` 에 내용을 드러내지 않습니다. Swift `String` 원본은 지울 수 없으니 민감하면 `Password(bytes:)` 를 쓰세요.

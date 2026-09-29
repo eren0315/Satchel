@@ -487,7 +487,6 @@ public final class ArchiveWriter {
         switch method {
         case .none: return nil
         case .aes: id = .winZipAES
-        case .legacyZipCrypto: id = .zipCrypto
         case .custom(let custom): id = custom
         }
         guard let scheme = options.registry.scheme(for: id) else { throw ZipError.unsupported("encryption \(id.rawValue) is not registered") }

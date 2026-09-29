@@ -64,10 +64,4 @@ public struct CRC32: Sendable {
         crc.update(bytes)
         return crc.value
     }
-
-    /// 전처리·후처리(반전) 없는 한 바이트 갱신 — ZipCrypto 키 갱신에 쓴다.
-    @inline(__always)
-    static func step(_ crc: UInt32, _ byte: UInt8) -> UInt32 {
-        tables[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
-    }
 }

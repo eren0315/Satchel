@@ -98,7 +98,7 @@ public enum PasswordResponse: Sendable {
 public enum PasswordCheck: Sendable, Hashable {
     /// 무결성(HMAC · CRC)까지 확인했다.
     case correct
-    /// 빠른 확인(AES 2바이트 · ZipCrypto 1바이트)만 통과했다.
+    /// 빠른 확인(AES 는 비밀번호 확인값 2바이트)만 통과했다.
     case likelyCorrect
     case wrong
 }

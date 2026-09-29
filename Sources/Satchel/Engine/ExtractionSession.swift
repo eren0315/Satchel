@@ -168,6 +168,9 @@ final class ExtractionSession {
         }
         if h.isEncrypted {
             guard let scheme = reader.options.registry.scheme(matching: h) else {
+                if entry.encryption == EncryptionName.zipCrypto {
+                    throw ZipError.unsupported("ZipCrypto (traditional PKWARE encryption) is not supported: \(entry.path)")
+                }
                 throw ZipError.unsupported("unknown encryption: \(entry.path)")
             }
             if let allowed, !allowed.contains(scheme.identifier) { throw ZipError.disallowedEncryption(scheme.identifier) }

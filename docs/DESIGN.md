@@ -1,7 +1,7 @@
 # Satchel 설계
 
 > 가방(satchel)에 파일을 넣고, 꺼내고, 잠근다 — **순수 Swift zip 라이브러리.**
-> 압축 · 해제 · 암호화(WinZip AES / ZipCrypto) · Zip64 · 한국어 인코딩(CP949)을 지원하고, 압축 방식과 암호화 방식을 **공개 프로토콜로 끼워 넣을 수 있다.**
+> 압축 · 해제 · 암호화(WinZip AES) · Zip64 · 한국어 인코딩(CP949)을 지원하고, 압축 방식과 암호화 방식을 **공개 프로토콜로 끼워 넣을 수 있다.**
 > 외부 의존성 없음 — `Foundation` · `Compression` · `CommonCrypto` · `Security` 만 쓴다.
 
 - 상태: **0.1.0 구현 완료 (태그 전)** — 이 문서가 설계의 단일 기준이다. 바뀌면 이 문서를 고치고 맨 아래 변경 이력에 남긴다.
@@ -16,7 +16,7 @@
 | 영역 | 해제(읽기) | 생성(쓰기) |
 | --- | --- | --- |
 | 압축 방식 | 저장(0) · DEFLATE(8) · 등록한 사용자 코덱 | 저장 · DEFLATE · 등록한 사용자 코덱 |
-| 암호화 | WinZip AES 128/192/256 (AE-1·AE-2) · ZipCrypto · 등록한 사용자 스킴 | **AES-256 · AE-2 가 기본**, AES 128/192 선택 가능, ZipCrypto 는 **직접 켜야만** (`.legacyZipCrypto`) |
+| 암호화 | WinZip AES 128/192/256 (AE-1·AE-2) · 등록한 사용자 스킴 | **AES-256 · AE-2 가 기본**, AES 128/192 선택 가능 |
 | Zip64 | ✅ | ✅ 필요할 때 자동 / 항상 / 끔 |
 | 파일 이름 인코딩 | UTF-8(bit 11) · 유니코드 경로 extra(0x7075) · **CP949** · CP437 — 자동 판정 또는 지정 | UTF-8(기본) · **CP949**(+0x7075 로 UTF-8 병기) |
 | 비밀번호 인코딩 | UTF-8 · **CP949** · CP437 후보를 차례로 시도 | 지정한 인코딩 1개 (기본 UTF-8) |
@@ -28,6 +28,7 @@
 
 | 항목 | 이유 |
 | --- | --- |
+| **ZipCrypto (전통 PKWARE 암호)** — 읽기 · 쓰기 모두 | 깨진 암호(알려진 평문 공격으로 비밀번호 없이 풀린다). 라이브러리가 **직접 구현한 암호화**가 되어 쓰는 앱의 수출 규정(암호화) 판단을 흐린다. 목록에는 `zipcrypto` 로 보이고, 풀면 이유를 담아 실패한다. 필요하면 `EncryptionScheme` 으로 구현해 등록한다 (§5) |
 | PKWARE Strong Encryption (플래그 bit 6) · 목차 암호화 (bit 13) | 독점 규격, 쓰이는 곳이 거의 없다 |
 | 분할(멀티 디스크) zip | 필요성 낮음 |
 | bzip2 · LZMA · deflate64 · zstd 등 | Apple 프레임워크로 처리할 수 없다 → **사용자 코덱으로 끼워 넣을 수 있게만** 한다 (§5) |
@@ -36,11 +37,12 @@
 | UI | 라이브러리 밖. 비밀번호 입력 창은 **샘플 앱**에서만 보여 준다 |
 
 ### 1.3 원칙
-1. **기본값은 안전한 쪽.** 생성 기본 암호화는 AES-256. 약한 방식은 이름부터 `legacy`.
+1. **기본값은 안전한 쪽.** 생성 기본 암호화는 AES-256. 깨진 암호(ZipCrypto)는 넣지 않는다.
 2. **외부에서 받은 zip 을 믿지 않는다.** 경로 탈출 · 심볼릭 링크 · 크기 폭탄 · 무결성 위반을 막는다 (§8).
 3. **해제는 전부 되거나 아무것도 남지 않는다** (§9).
 4. **비밀번호·키는 로그·에러·`description` 어디에도 나오지 않는다.**
 5. **모르는 것을 조용히 넘기지 않는다.** 지원하지 않는 기능은 이유를 담아 실패한다.
+6. **암호 알고리즘을 직접 구현하지 않는다.** AES · PBKDF2 · HMAC 은 모두 OS 의 `CommonCrypto` 를 호출한다(CTR 모드 조립만 우리 코드 — §11.1). 쓰는 앱이 "OS 의 표준 암호화만 쓴다"고 설명할 수 있게.
 
 ---
 
@@ -58,7 +60,7 @@ Satchel/
 │   ├── Extension/                // 공개 확장 지점: CompressionCodec · EncryptionScheme · ByteTransform · 저장소 · ZipRegistry
 │   ├── Format/                   // 로컬 헤더 · 목차 · EOCD · Zip64 EOCD/locator · extra field · DOS 시각
 │   ├── Codecs/                   // StoreCodec · DeflateCodec (Compression 프레임워크)
-│   ├── Encryption/               // WinZipAES · ZipCrypto
+│   ├── Encryption/               // WinZipAES
 │   ├── Text/                     // 파일 이름·비밀번호 인코딩 (UTF-8 · CP949 · CP437) · NFC 정규화
 │   ├── Safety/                   // 항목 경로 검증 · 상한 검사
 │   ├── Storage/                  // 파일 · 메모리 저장소, 64 KiB 버퍼
@@ -88,7 +90,7 @@ Satchel/
 └──────────────────────────────┬──────────────────────────────────────┘
 ┌ 등록소 ZipRegistry ───────────┴──────────────────────────────────────┐
 │  CompressionCodec: Store · Deflate · (사용자)                          │
-│  EncryptionScheme: WinZipAES · ZipCrypto · (사용자)                    │
+│  EncryptionScheme: WinZipAES · (사용자)                                │
 └──────────────────────────────┬──────────────────────────────────────┘
 ┌ 형식 · 텍스트 · 안전 ──────────┴──────────────────────────────────────┐
 │  헤더/extra field 해석(Zip64 포함) · 이름 인코딩 · 경로 검증           │
@@ -221,7 +223,6 @@ public enum CompressionMethod: Sendable, Hashable { case store, deflate, custom(
 public enum EncryptionMethod: Sendable, Hashable {
     case none
     case aes(AESStrength = .bits256)
-    case legacyZipCrypto                              // ⚠️ 약한 암호. 기본 도구 호환이 꼭 필요할 때만
     case custom(EncryptionIdentifier)
 }
 public enum AESStrength: Sendable, CaseIterable { case bits128, bits192, bits256 }
@@ -287,7 +288,7 @@ public enum ZipError: Error, Sendable, Equatable {
 
 ## 5. 공개 확장 지점
 
-> 0.x 동안은 이 시그니처도 마이너 버전에서 바뀔 수 있다. 내장 구현(Store · Deflate · WinZipAES · ZipCrypto)이 모두 이 프로토콜로 만들어진다.
+> 0.x 동안은 이 시그니처도 마이너 버전에서 바뀔 수 있다. 내장 구현(Store · Deflate · WinZipAES)이 모두 이 프로토콜로 만들어진다.
 
 ### 5.1 ByteTransform — 파이프라인 한 단계
 
@@ -317,7 +318,6 @@ public protocol CompressionCodec: Sendable {
 public struct EncryptionIdentifier: Hashable, Sendable, RawRepresentable {
     public let rawValue: String
     public static let winZipAES = EncryptionIdentifier(rawValue: "winzip-aes")
-    public static let zipCrypto = EncryptionIdentifier(rawValue: "zipcrypto")
 }
 
 public protocol EncryptionScheme: Sendable {
@@ -330,15 +330,15 @@ public protocol EncryptionScheme: Sendable {
     func actualCompressionMethodID(for header: EntryHeader) -> UInt16
     /// 헤더의 CRC 필드가 의미 있는 값인가 (AE-2 → false). `Entry.crc32` 가 nil 이 되는 근거. 기본 구현 = true
     func storesCRC(for header: EntryHeader) -> Bool
-    /// 데이터 맨 앞에서 읽어야 할 바이트 수 (AES: salt + 확인값, ZipCrypto: 12)
+    /// 데이터 맨 앞에서 읽어야 할 바이트 수 (AES: salt + 확인값)
     func prefixLength(for header: EntryHeader) -> Int
-    /// 맨 뒤 바이트 수 (AES: 인증 코드 10, ZipCrypto: 0)
+    /// 맨 뒤 바이트 수 (AES: 인증 코드 10)
     func trailerLength(for header: EntryHeader) -> Int
     /// 비밀번호를 빠르게 확인하고, 맞으면 복호화기를 만든다
     func makeDecryptor(password: [UInt8], header: EntryHeader, prefix: [UInt8]) throws -> DecryptorResult
 
     // ── 쓰기 ──
-    /// 암호화하기 전에 원문 CRC 가 필요한가 (ZipCrypto: 헤더 확인 바이트에 CRC 를 쓴다)
+    /// 암호화하기 전에 원문 CRC 가 필요한가 (헤더에 CRC 기반 확인값을 쓰는 스킴 — 원본을 한 번 더 읽는다)
     var requiresCRCBeforeEncryption: Bool { get }
     func makeEncryptor(password: [UInt8], context: EncryptionContext) throws -> any EntryEncryptor
 }
@@ -353,7 +353,7 @@ public protocol EntryDecryptor: ByteTransform {
     func verify(trailer: [UInt8]) throws
     /// true 면 스킴이 무결성을 보장하므로 CRC 가 0 이어도 된다 (AE-2)
     var providesIntegrity: Bool { get }
-    /// true 면 무결성 실패를 "비밀번호 틀림"으로 본다 (ZipCrypto). 기본 구현 = false
+    /// true 면 무결성 실패를 "비밀번호 틀림"으로 본다 (무결성 수단이 CRC 뿐인 스킴). 기본 구현 = false
     var integrityFailureIndicatesWrongPassword: Bool { get }
 }
 
@@ -395,7 +395,7 @@ public protocol ArchiveWritable: AnyObject {
 
 ```swift
 public struct ZipRegistry: Sendable {
-    public static let standard: ZipRegistry           // Store · Deflate · WinZipAES · ZipCrypto
+    public static let standard: ZipRegistry           // Store · Deflate · WinZipAES
     public init(codecs: [any CompressionCodec], schemes: [any EncryptionScheme])
     public func registering(_ codec: any CompressionCodec) -> ZipRegistry     // 같은 methodID 면 교체
     public func registering(_ scheme: any EncryptionScheme) -> ZipRegistry    // 같은 identifier 면 교체
@@ -403,9 +403,9 @@ public struct ZipRegistry: Sendable {
 ```
 
 - 등록소는 **값 타입**이다. 전역 상태를 바꾸지 않고 옵션으로 넘긴다 — 한 앱 안에서 서로 다른 설정이 섞여도 안전하다.
-- 암호화 판정은 스킴을 순서대로 `matches` 에 물어 **첫 번째로 맞는 것**을 쓴다. `registering(_:)` 은 **새 identifier 를 맨 앞에** 넣고, **같은 identifier 는 그 자리에서** 교체한다 — ZipCrypto 처럼 넓게 맞는 내장 스킴은 뒤에 남아 사용자 스킴을 가리지 않는다(내장 스킴을 교체해도 순서 유지).
-- **쓰기도 등록소를 거친다** — `.aes` · `.legacyZipCrypto` 도 등록소에서 identifier 로 찾는다. 등록소에서 뺀 방식은 쓸 수 없고, 교체한 구현이 쓰인다(내장 AES 만 호출마다 강도를 받는다). 저장 방식 대체도 등록소의 저장 코덱을 쓴다. 아무것도 안 맞는데 플래그 bit 0 이 켜져 있으면 `unsupported`.
-- 내장 코덱·스킴도 공개 타입이다: `StoreCodec` · `DeflateCodec` · `WinZipAESScheme(strength:)` · `ZipCryptoScheme`.
+- 암호화 판정은 스킴을 순서대로 `matches` 에 물어 **첫 번째로 맞는 것**을 쓴다. `registering(_:)` 은 **새 identifier 를 맨 앞에** 넣고, **같은 identifier 는 그 자리에서** 교체한다 — 먼저 등록된(넓게 맞을 수 있는) 스킴은 뒤에 남아 새 스킴을 가리지 않는다(기존 스킴을 교체해도 순서 유지).
+- **쓰기도 등록소를 거친다** — `.aes` 도 등록소에서 identifier 로 찾는다. 등록소에서 뺀 방식은 쓸 수 없고, 교체한 구현이 쓰인다(내장 AES 만 호출마다 강도를 받는다). 저장 방식 대체도 등록소의 저장 코덱을 쓴다. 아무것도 안 맞는데 플래그 bit 0 이 켜져 있으면 `unsupported`.
+- 내장 코덱·스킴도 공개 타입이다: `StoreCodec` · `DeflateCodec` · `WinZipAESScheme(strength:)`.
 
 ---
 
@@ -461,9 +461,7 @@ public enum PasswordResponse: Sendable {
 | 스킴 | 빠른 확인 | 확인 통과 후 실패 | 보고 |
 | --- | --- | --- | --- |
 | WinZip AES | 확인값 2바이트 (틀린 비밀번호가 통과할 확률 1/65,536) | HMAC 불일치 | 확인값 불일치 → `wrongPassword` / HMAC 불일치 → `corrupted` |
-| ZipCrypto | 확인 바이트 1개 (통과 확률 1/256) | CRC 불일치 | 둘 다 → **`wrongPassword`** |
-
-- ZipCrypto 는 무결성 검사 수단이 CRC 뿐이라 **틀린 비밀번호와 손상을 구분할 수 없다.** 1/256 확률로 틀린 비밀번호가 확인 바이트를 통과하므로, CRC 불일치를 비밀번호 틀림으로 본다(7-Zip 과 같은 판단). 진짜 손상된 파일이면 제공자가 계속 다시 물을 수 있고, 제공자가 `cancel` 로 끝낸다.
+| 사용자 스킴 (`integrityFailureIndicatesWrongPassword = true`) | 스킴이 정한다 | CRC 불일치 | 둘 다 → **`wrongPassword`** (무결성 수단이 CRC 뿐이라 틀린 비밀번호와 손상을 구분할 수 없는 스킴용) |
 - 후보(인코딩 · `passwords`)를 시도할 때 **확인값을 통과한 후보만** 복호화까지 간다. 통과한 후보가 CRC/HMAC 에서 실패하면 다음 후보로 넘어간다.
 
 ### 6.4 `verify(_:for:)`
@@ -619,20 +617,11 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 - **쓸 때는 AE-2** — CRC 를 0 으로 둔다(원문 정보 노출 방지, 무결성은 HMAC).
 - 읽을 때 AE-1 이면 HMAC 과 CRC 를 **둘 다** 검증한다.
 
-### 11.2 ZipCrypto (전통 PKWARE)
+### 11.2 ZipCrypto — 지원하지 않음
 
-**키 스트림**
-- 키 3개 초기값 `0x12345678` · `0x23456789` · `0x34567890`. 비밀번호 바이트마다 `update_keys` (CRC32 테이블 사용).
-- 복호화 바이트: `temp = key2 | 2; ((temp * (temp ^ 1)) >> 8) & 0xFF`. 평문으로 `update_keys`.
-
-**헤더 12바이트** (데이터 맨 앞, 압축 크기에 포함)
-- 앞 11바이트 난수 + **확인 바이트 1개**.
-- 확인 바이트 = CRC 의 상위 바이트. 단 플래그 bit 3(data descriptor)이면 DOS 수정 시각의 상위 바이트 — **읽을 때는 둘 다 처리**한다.
-- **쓸 때는 CRC 를 먼저 알아야 한다** → 원본을 한 번 더 읽어 CRC 를 먼저 계산한다(`requiresCRCBeforeEncryption = true`). data descriptor 를 쓰지 않아 옛 도구와도 호환된다.
-
-**정책**
-- 생성은 `EncryptionMethod.legacyZipCrypto` 를 **직접 지정했을 때만**. 문서 주석에 약한 암호라는 경고를 단다.
-- 해제는 기본 허용 (`allowedEncryption` 에서 뺄 수 있다).
+- 0.1.0 개발 중 구현했다가 **태그 전에 뺐다**(2026-09-29). 이유: 깨진 암호 · 라이브러리가 직접 구현한 유일한 암호 알고리즘이라 쓰는 앱의 수출 규정 판단(App Store Connect 암호화 질문)을 흐림 · 쓰는 곳 없음.
+- 판정: 플래그 bit 0 이 켜져 있고 AES(방식 99)도 PKWARE SES(bit 6)도 아니면 ZipCrypto 로 보고, `Entry.encryption` 에 `zipcrypto` 로 보여 준다. 해제하면 `unsupported("ZipCrypto (traditional PKWARE encryption) is not supported")`.
+- 다시 필요해지면 `EncryptionScheme` 으로 구현해 별도 모듈에서 `registering(_:)` 한다 — 확장 지점(`requiresCRCBeforeEncryption` · `integrityFailureIndicatesWrongPassword`)은 그 용도로 남겨 둔다.
 
 ---
 
@@ -647,8 +636,8 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 | 왕복 | 저장/DEFLATE × Zip64 automatic/always, 빈 파일 · 빈 폴더 · 한글 이름 · 64 KiB 경계(65,536 · 65,537), 압축 안 되는 데이터 → 저장 방식 대체, 권한 · 수정 시각 · 주석 |
 | AES (해제) | **`bsdtar`(libarchive) 로 만든 AES-256 · AES-128** — 독립 구현. 맞음 / 틀림 / 없음 |
 | AES (생성) | Satchel AES-128/192/256 → **`bsdtar` 로 해제** (독립 구현 교차 검증), 틀린 비밀번호는 bsdtar 도 거부 · `7zz t` (설치 시) |
-| ZipCrypto | `bsdtar` · `zip -P` 로 만든 것 해제, **CP949 비밀번호**(셸 printf 로 원시 바이트), Satchel 산출물 → `unzip -P` |
-| 비밀번호 후보 | CP949 후보 · NFD 후보 (Process 인수가 NFD 로 바뀌는 현상으로 재현) |
+| ZipCrypto 거부 | `zip -P` · `bsdtar zipcrypt` 로 만든 zip → 목록에 `zipcrypto`, 해제는 `unsupported(ZipCrypto…)` · 대상 폴더 미생성 |
+| 비밀번호 후보 | **CP949 후보**(bsdtar AES 에 셸 printf 로 CP949 원시 바이트) · NFD 후보 (Process 인수가 NFD 로 바뀌는 현상으로 재현) |
 | 무결성 | AES 암호문 1비트 변조 → `corrupted(authentication failed)` |
 | Zip64 | `.always` 산출물 → unzip · python · bsdtar, python `force_zip64` 읽기, Info-ZIP `-fz` 읽기, **항목 65,540개**(Zip64 EOCD), `.never` 거부, `maxEntryCount`, **4 GiB 초과 항목 왕복**(`SATCHEL_LARGE_TESTS=1`) |
 | 인코딩 | CP949 이름(bit 11 없음) · bit 11 없는 UTF-8 · CP437 대체 · 강제 인코딩 · 0x7075 CRC 일치/불일치 · CP949 쓰기 + 0x7075 (python `metadata_encoding='cp949'` 로 확인) · 이모지 CP949 실패 · NFD → NFC |
@@ -660,7 +649,7 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 | 리뷰 회귀 | 조작된 Zip64 locator 오프셋(오버플로 트랩 없이 거부) · 빈 비밀번호 = 틀림 · overwrite 가 폴더를 파일로 바꾸지 않음 · 깊은 경로 거부 + 트리 성능 · 쓰기가 등록소를 따름 · 내장 스킴 교체 시 우선순위 유지 · group/other 쓰기 제거 · 데이터 없는 DEFLATE 빈 항목 · slice-by-8 CRC 기준값 · 압축 안 되는 데이터 미리 판정 · 메모리 API 상한 · 항목 단위 API 겹침 거부 |
 | 비밀 노출 | `Password` 의 `description` · `debugDescription` · `dump()`, 옵션 `dump()`, 에러 문자열에 비밀번호 없음 |
 
-- 🔴 **AES 는 반드시 독립 구현으로 교차 검증한다.** 암호화와 복호화를 둘 다 우리가 짜면 같은 실수(예: §11.1 카운터 방향)가 서로 맞물려 왕복 테스트를 통과한다. macOS 기본 `bsdtar`(libarchive 3.7) 가 AES-128/256 · ZipCrypto 를 쓰고 읽을 수 있어 7-Zip 없이도 검증된다. AES-192 는 libarchive 가 쓰지 못해 해제 방향만 bsdtar 로 확인한다.
+- 🔴 **AES 는 반드시 독립 구현으로 교차 검증한다.** 암호화와 복호화를 둘 다 우리가 짜면 같은 실수(예: §11.1 카운터 방향)가 서로 맞물려 왕복 테스트를 통과한다. macOS 기본 `bsdtar`(libarchive 3.7) 가 AES-128/256 을 쓰고 읽을 수 있어 7-Zip 없이도 검증된다. AES-192 는 libarchive 가 쓰지 못해 해제 방향만 bsdtar 로 확인한다.
 - 픽스처는 **합성 데이터만** 쓴다. 실제 서비스에서 받은 zip 은 넣지 않는다.
 
 ## 13. 샘플 앱 (`Example/SatchelExample.swiftpm`)
@@ -670,7 +659,7 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 - 서명 팀은 비워 두었다 — 실기기 실행 시 각자 고른다. Xcode 가 `Package.swift` 에 `teamIdentifier` 를 써 넣으므로 커밋하지 않는다.
 - **열기**: 파일 선택 → 항목 목록(암호화 여부 · 방식 · Zip64 · 크기 표시).
 - **해제**: `PasswordProvider` 를 구현한 `@MainActor` 객체가 `SecureField` 알림창을 띄운다. 틀리면 "다시 입력"(시도 횟수 표시), 건너뛰기 · 취소 버튼. 진행률 막대 + 취소.
-- **생성**: 파일 선택 → 압축 방식 · 암호화 방식(AES 강도 / ZipCrypto 는 경고 문구와 함께) · 이름 인코딩 · Zip64 모드 → 공유 시트.
+- **생성**: 파일 선택 → 압축 방식 · 암호화 방식(AES 강도) · 이름 인코딩 · Zip64 모드 → 공유 시트.
 
 ---
 
@@ -698,3 +687,4 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 | 2026-09-29 | 0.1.0 구현 — 릴리스 단일화, `ReadOptions` 분리 · `CreateOptions`→`WriteOptions`, 스킴 우선순위(나중 등록 먼저), 비밀번호 NFC/NFD 후보, EOCD 정합성 검사, 대상 폴더 기존 링크 거부 · `O_NOFOLLOW`, 파일 `u+rw` 보장, 테스트 픽스처를 시스템 도구로 생성(bsdtar 를 AES 독립 기준으로), 샘플 앱 `.swiftpm` |
 | 2026-09-29 | 코드 리뷰(5개 차원, 24건) 반영 — Zip64 locator 오버플로(P1), 경로 트리, 원자적 파일 교체 · 파일↔폴더 충돌 거부, 쓰기 경로 등록소 경유, `storesCRC(for:)`, 스킴 제자리 교체, 빈 비밀번호 = 틀림, `allowedEncryption` 기본 nil, `ExtractLimits.inMemory`, 8 KiB 해제 입력, 압축률 미리 판정, `O_NOFOLLOW` 원본 읽기, group/other 쓰기 제거, slice-by-8 CRC, 파생 키 지우기 |
 | 2026-09-29 | 최소 지원 버전 iOS 13 / macOS 10.15 → **iOS 15 / macOS 12** (쓰는 앱의 상향 계획에 맞춤) |
+| 2026-09-29 | **ZipCrypto 제거**(읽기·쓰기, 태그 전) — 깨진 암호 · 자체 구현 암호라 쓰는 앱의 수출 규정 판단을 흐림 · 쓰는 곳 없음. 목록에는 `zipcrypto` 로 보이고 해제는 `unsupported`. 원칙 6(암호 알고리즘 직접 구현 금지) 추가 |

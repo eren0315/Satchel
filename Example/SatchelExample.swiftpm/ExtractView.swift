@@ -104,8 +104,9 @@ private struct EntryRow: View {
             HStack(spacing: 6) {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(clamping: entry.uncompressedSize), countStyle: .file))
                 if let encryption = entry.encryption {
-                    Badge(text: encryption == .zipCrypto ? "ZipCrypto" : encryption == .winZipAES ? "AES" : encryption.rawValue,
-                          color: encryption == .zipCrypto ? .orange : .green)
+                    // 등록된 방식이 아니면(예: ZipCrypto) 풀 수 없다 — 이름만 보여 준다.
+                    Badge(text: encryption == .winZipAES ? "AES" : "\(encryption.rawValue) · 미지원",
+                          color: encryption == .winZipAES ? .green : .orange)
                 }
                 if entry.isZip64 { Badge(text: "Zip64", color: .blue) }
                 if entry.kind == .directory { Badge(text: "폴더", color: .gray) }

@@ -8,7 +8,6 @@ struct CreateView: View {
         case aes256 = "AES-256"
         case aes192 = "AES-192"
         case aes128 = "AES-128"
-        case zipCrypto = "ZipCrypto (약함)"
         var id: Self { self }
 
         var method: EncryptionMethod {
@@ -17,7 +16,6 @@ struct CreateView: View {
             case .aes256: .aes(.bits256)
             case .aes192: .aes(.bits192)
             case .aes128: .aes(.bits128)
-            case .zipCrypto: .legacyZipCrypto
             }
         }
     }
@@ -54,10 +52,6 @@ struct CreateView: View {
                     }
                     if encryption != .none {
                         SecureField("비밀번호", text: $password)
-                    }
-                    if encryption == .zipCrypto {
-                        Text("ZipCrypto 는 깨진 암호입니다. 운영체제 기본 도구로 열어야 할 때만 쓰세요.")
-                            .font(.footnote).foregroundStyle(.orange)
                     }
                     Picker("파일 이름", selection: $nameEncoding) {
                         ForEach(NameEncoding.allCases) { Text($0.rawValue).tag($0) }

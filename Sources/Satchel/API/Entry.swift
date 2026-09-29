@@ -41,8 +41,11 @@ public struct CreateResult: Sendable {
     public let usedZip64: Bool
 }
 
+/// 등록된 스킴이 없을 때 목록에 보여 줄 이름 (풀 수는 없다).
 enum EncryptionName {
     static let pkwareStrong = EncryptionIdentifier(rawValue: "pkware-strong")
+    /// 전통 PKWARE 암호 — 지원하지 않는다 (깨진 암호).
+    static let zipCrypto = EncryptionIdentifier(rawValue: "zipcrypto")
     static let unknown = EncryptionIdentifier(rawValue: "unknown")
 }
 
@@ -71,6 +74,8 @@ extension Entry {
             encryption = scheme.identifier
         } else if h.generalPurposeFlags & GeneralPurposeFlag.strongEncryption != 0 {
             encryption = EncryptionName.pkwareStrong
+        } else if h.compressionMethodID != WinZipAESScheme.methodID {
+            encryption = EncryptionName.zipCrypto
         } else {
             encryption = EncryptionName.unknown
         }
