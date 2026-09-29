@@ -9,6 +9,7 @@ import PackageDescription
 let package = Package(
     name: "SatchelExample",
     platforms: [
+        // 라이브러리는 iOS 15+. 샘플만 16 — NavigationStack · ShareLink (Example/README.md)
         .iOS("16.0"),
     ],
     products: [

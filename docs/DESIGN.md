@@ -48,7 +48,7 @@
 
 ```
 Satchel/
-├── Package.swift                 // swift-tools-version 6.0 · Swift 6 언어 모드 · iOS 13 / macOS 10.15
+├── Package.swift                 // swift-tools-version 6.0 · Swift 6 언어 모드 · iOS 15 / macOS 12
 ├── LICENSE                       // 0BSD
 ├── README.md
 ├── docs/DESIGN.md                // 이 문서
@@ -68,7 +68,7 @@ Satchel/
 └── Example/SatchelExample.swiftpm // 샘플 앱 (SwiftUI, Xcode 로 연다)
 ```
 
-- **iOS 13 / macOS 10.15**: 연결할 앱의 최소 지원 버전보다 높으면 연결이 안 된다. macOS 는 `swift test` 를 시뮬레이터 없이 돌리기 위해 넣는다. async API 는 Swift Concurrency back-deploy 로 iOS 13 에서 동작한다.
+- **iOS 15 / macOS 12**: 쓰는 앱의 최소 지원 버전(iOS 15)에 맞춘다 — 패키지가 앱보다 높으면 연결이 안 된다. 기술적 하한은 iOS 13(async API 의 Swift Concurrency back-deploy)이지만, 15 로 두면 Concurrency 를 OS 내장 런타임으로 쓴다. macOS 12 는 iOS 15 와 같은 세대이고, `swift test` 를 시뮬레이터 없이 돌리기 위해 넣는다.
 - **Swift 6 언어 모드**: 엄격한 동시성 검사로 스레드 안전을 컴파일러가 보장하게 한다. 쓰는 쪽은 Xcode 16 이상이어야 한다.
 - **의존성 0개** (테스트 포함). 교차 검증은 macOS 기본 도구(`bsdtar`(libarchive) · `zip`/`unzip` · `ditto`)와 `python3`, 설치돼 있으면 `7zz` 로 한다 (§12).
 - **공개 타입 이름을 모듈 이름 `Satchel` 과 같게 두지 않는다** — `Satchel.X` 로 한정할 때 모듈과 타입이 충돌한다.
@@ -666,7 +666,8 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 ## 13. 샘플 앱 (`Example/SatchelExample.swiftpm`)
 
 - Swift Playgrounds 앱 패키지 형식 — Xcode 로 폴더를 열면 iOS 앱으로 실행된다. 라이브러리는 `../..` 로컬 경로로 연결.
-- SwiftUI · iOS 16+ (샘플이라 최소 버전 자유). 서명 팀은 비워 두었다 — 실기기 실행 시 각자 고른다.
+- SwiftUI · **iOS 16+** — 라이브러리(iOS 15)보다 높은 이유는 `NavigationStack` · `ShareLink`(둘 다 iOS 16). 샘플은 앱에 들어가지 않아 코드를 짧게 두는 쪽을 택했다. iOS 15 로 내리려면 `NavigationView` · `UIActivityViewController` 로 바꾼다. 자세한 건 `Example/README.md`.
+- 서명 팀은 비워 두었다 — 실기기 실행 시 각자 고른다. Xcode 가 `Package.swift` 에 `teamIdentifier` 를 써 넣으므로 커밋하지 않는다.
 - **열기**: 파일 선택 → 항목 목록(암호화 여부 · 방식 · Zip64 · 크기 표시).
 - **해제**: `PasswordProvider` 를 구현한 `@MainActor` 객체가 `SecureField` 알림창을 띄운다. 틀리면 "다시 입력"(시도 횟수 표시), 건너뛰기 · 취소 버튼. 진행률 막대 + 취소.
 - **생성**: 파일 선택 → 압축 방식 · 암호화 방식(AES 강도 / ZipCrypto 는 경고 문구와 함께) · 이름 인코딩 · Zip64 모드 → 공유 시트.
@@ -696,3 +697,4 @@ salt (8 / 12 / 16) | 비밀번호 확인값 (2) | 암호문 (n) | 인증 코드 
 | 2026-09-29 | 범위 확장 — AES 128/192 · ZipCrypto(생성은 opt-in) · Zip64 읽기/쓰기 · CP949(이름·비밀번호) · 비밀번호 제공자 · 확장 지점 공개(0.1.0 부터) · Reader/Writer · 메모리 저장소 · 진행률/취소. 버전 0.1.0 시작, 릴리스 단위 재편 |
 | 2026-09-29 | 0.1.0 구현 — 릴리스 단일화, `ReadOptions` 분리 · `CreateOptions`→`WriteOptions`, 스킴 우선순위(나중 등록 먼저), 비밀번호 NFC/NFD 후보, EOCD 정합성 검사, 대상 폴더 기존 링크 거부 · `O_NOFOLLOW`, 파일 `u+rw` 보장, 테스트 픽스처를 시스템 도구로 생성(bsdtar 를 AES 독립 기준으로), 샘플 앱 `.swiftpm` |
 | 2026-09-29 | 코드 리뷰(5개 차원, 24건) 반영 — Zip64 locator 오버플로(P1), 경로 트리, 원자적 파일 교체 · 파일↔폴더 충돌 거부, 쓰기 경로 등록소 경유, `storesCRC(for:)`, 스킴 제자리 교체, 빈 비밀번호 = 틀림, `allowedEncryption` 기본 nil, `ExtractLimits.inMemory`, 8 KiB 해제 입력, 압축률 미리 판정, `O_NOFOLLOW` 원본 읽기, group/other 쓰기 제거, slice-by-8 CRC, 파생 키 지우기 |
+| 2026-09-29 | 최소 지원 버전 iOS 13 / macOS 10.15 → **iOS 15 / macOS 12** (쓰는 앱의 상향 계획에 맞춤) |

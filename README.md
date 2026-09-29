@@ -15,7 +15,7 @@
 
 ## 요구 사항
 
-- iOS 13+ / macOS 10.15+
+- iOS 15+ / macOS 12+
 - Swift 6 (Xcode 16+)
 
 ## 설치
@@ -103,6 +103,7 @@ read.registry = ZipRegistry.standard.registering(MyCodec()).registering(MyScheme
 ## 샘플 앱
 
 `Example/SatchelExample.swiftpm` 을 Xcode 로 열면 iOS 앱으로 실행됩니다 — zip 열기(항목 목록 · 비밀번호 입력 창 · 진행률 · 취소)와 만들기(압축 · 암호화 · 이름 인코딩 · Zip64).
+샘플만 **iOS 16+** 입니다(`NavigationStack` · `ShareLink`). 실행 방법 · 테스트용 zip · 버전 이유는 [Example/README.md](Example/README.md).
 
 ## 테스트
 
